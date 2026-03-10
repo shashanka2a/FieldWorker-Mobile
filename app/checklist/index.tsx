@@ -30,12 +30,7 @@ const COLORS = {
     amber: '#FF9F0A',
 };
 
-const SITES = [
-    'North Valley Solar Farm',
-    'East Ridge Pipeline',
-    'Mountain View Substation',
-    'Other',
-];
+
 
 type FluidLevel = 'FULL' | 'LOW' | '';
 type HoseCondition = 'GOOD' | 'BAD' | '';
@@ -81,7 +76,7 @@ export default function ChecklistScreen() {
         machineNumber: '',
         lastFourVin: '',
         operatorName: '',
-        siteName: SITES[0],
+        siteName: selectedProject?.name || '',
         asvHours: '',
         motorOil: '',
         motorOilAmount: '',
@@ -95,7 +90,6 @@ export default function ChecklistScreen() {
         repairsNotes: '',
     });
     const [photos, setPhotos] = useState<string[]>([]);
-    const [showSitePicker, setShowSitePicker] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
 
@@ -144,7 +138,7 @@ export default function ChecklistScreen() {
                 id: Date.now().toString(),
                 type: 'checklist',
                 timestamp: new Date().toISOString(),
-                formData: form as unknown as Record<string, string>,
+                formData: { ...form, siteName: selectedProject?.name || 'Unknown Site' } as unknown as Record<string, string>,
                 photos: photos.length > 0 ? photos : undefined,
             });
             setSuccess(true);
@@ -165,13 +159,13 @@ export default function ChecklistScreen() {
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Machine Information</Text>
                     <View style={styles.field}>
-                        <Text style={styles.label}>Site Name</Text>
-                        <TouchableOpacity style={styles.select} onPress={() => setShowSitePicker(true)}>
-                            <Text style={form.siteName ? styles.selectText : styles.selectPlaceholder}>
-                                {form.siteName || 'Select site...'}
+                        <Text style={styles.label}>Site Name <Text style={styles.req}>(Locked)</Text></Text>
+                        <View style={[styles.select, { opacity: 0.7, backgroundColor: COLORS.surface }]}>
+                            <Text style={styles.selectText}>
+                                {selectedProject?.name || 'No project selected'}
                             </Text>
-                            <Ionicons name="chevron-down" size={16} color={COLORS.subtitle} />
-                        </TouchableOpacity>
+                            <Ionicons name="lock-closed" size={16} color={COLORS.subtitle} />
+                        </View>
                     </View>
                     <View style={styles.row2}>
                         <View style={[styles.field, { flex: 1 }]}>
@@ -286,25 +280,7 @@ export default function ChecklistScreen() {
                 </TouchableOpacity>
             </ScrollView>
 
-            {/* Site Picker Modal */}
-            <Modal visible={showSitePicker} transparent animationType="slide" onRequestClose={() => setShowSitePicker(false)}>
-                <Pressable style={styles.modalBackdrop} onPress={() => setShowSitePicker(false)}>
-                    <View style={styles.pickerSheet}>
-                        <View style={styles.pickerHandle} />
-                        <Text style={styles.pickerTitle}>Select Site</Text>
-                        {SITES.map((site) => (
-                            <TouchableOpacity
-                                key={site}
-                                style={[styles.pickerItem, form.siteName === site && styles.pickerItemActive]}
-                                onPress={() => { update('siteName', site); setShowSitePicker(false); }}
-                            >
-                                <Text style={[styles.pickerItemText, form.siteName === site && { color: COLORS.brand }]}>{site}</Text>
-                                {form.siteName === site && <Ionicons name="checkmark" size={18} color={COLORS.brand} />}
-                            </TouchableOpacity>
-                        ))}
-                    </View>
-                </Pressable>
-            </Modal>
+
         </View>
     );
 }
