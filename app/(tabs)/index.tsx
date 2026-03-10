@@ -98,29 +98,16 @@ export default function HomeScreen() {
         loadDayStatuses();
     }, [loadDayStatuses]);
 
-    // Build weekdays strip: 7 before + selected + 6 after
+    // Build weekdays strip: Current week containing selected date (Sun-Sat)
     const buildWeekdays = (): Date[] => {
         const weekdays: Date[] = [];
-        const tmp = new Date(selectedDate);
-        let before = 0;
-        while (before < 7) {
-            tmp.setDate(tmp.getDate() - 1);
-            if (tmp.getDay() !== 0 && tmp.getDay() !== 6) {
-                weekdays.unshift(new Date(tmp));
-                before++;
-            }
-        }
-        if (selectedDate.getDay() !== 0 && selectedDate.getDay() !== 6) {
-            weekdays.push(new Date(selectedDate));
-        }
-        const after = new Date(selectedDate);
-        let count = 0;
-        while (count < 6) {
-            after.setDate(after.getDate() + 1);
-            if (after.getDay() !== 0 && after.getDay() !== 6) {
-                weekdays.push(new Date(after));
-                count++;
-            }
+        const current = new Date(selectedDate);
+        // Step back to Sunday
+        current.setDate(current.getDate() - current.getDay());
+
+        for (let i = 0; i < 7; i++) {
+            weekdays.push(new Date(current));
+            current.setDate(current.getDate() + 1);
         }
         return weekdays;
     };
@@ -449,7 +436,7 @@ const styles = StyleSheet.create({
 
     // Weekday strip
     weekdayCard: { marginHorizontal: 16, backgroundColor: COLORS.card, borderRadius: 16, paddingVertical: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, marginBottom: 16 },
-    weekdayScroll: { paddingHorizontal: 8, gap: 8 },
+    weekdayScroll: { paddingHorizontal: 16, gap: 12, flexGrow: 1, justifyContent: 'space-between' },
     weekday: { alignItems: 'center', gap: 4, paddingHorizontal: 4 },
     weekdayLetter: { fontSize: 11, fontWeight: '600', color: COLORS.subtitle, textTransform: 'uppercase' },
     weekdayNum: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },

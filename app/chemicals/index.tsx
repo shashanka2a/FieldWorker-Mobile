@@ -228,19 +228,17 @@ export default function ChemicalsScreen() {
                                     style={[styles.qtyInput, warning ? styles.qtyInputWarning : null]}
                                     value={chem.quantity}
                                     onChangeText={(v) => updateChemical(idx, 'quantity', v)}
-                                    placeholder="0"
+                                    placeholder="0.0"
                                     placeholderTextColor={COLORS.subtitle}
                                     keyboardType="decimal-pad"
                                 />
-                                <View style={styles.unitRow}>
-                                    <TouchableOpacity
-                                        style={styles.unitSelectDrop}
-                                        onPress={() => setShowUnitPicker(idx)}
-                                    >
-                                        <Text style={styles.unitSelectText}>{chem.unit}</Text>
-                                        <Ionicons name="chevron-down" size={14} color={COLORS.subtitle} />
-                                    </TouchableOpacity>
-                                </View>
+                                <TouchableOpacity
+                                    style={styles.unitSelectDrop}
+                                    onPress={() => setShowUnitPicker(idx)}
+                                >
+                                    <Text style={styles.unitSelectText}>{chem.unit}</Text>
+                                    <Ionicons name="chevron-down" size={14} color={COLORS.subtitle} />
+                                </TouchableOpacity>
                             </View>
                             {warning && (
                                 <View style={styles.warningRow}>
@@ -356,11 +354,10 @@ const styles = StyleSheet.create({
     chemName: { color: '#fff', fontSize: 15, fontWeight: '600' },
     chemNameInput: { flex: 1, color: '#fff', fontSize: 15, fontWeight: '600', borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingBottom: 4 },
     chemInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-    qtyInput: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, color: '#fff', fontSize: 20, fontWeight: '700', width: 100, textAlign: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+    qtyInput: { flex: 1, backgroundColor: COLORS.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, color: '#fff', fontSize: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     qtyInputWarning: { borderColor: COLORS.warning },
-    unitRow: { flex: 1, flexDirection: 'row', justifyContent: 'flex-start' },
-    unitSelectDrop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, width: 110 },
-    unitSelectText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+    unitSelectDrop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, width: 95 },
+    unitSelectText: { color: '#fff', fontSize: 16, fontWeight: '500' },
     warningRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     warningText: { color: COLORS.warning, fontSize: 12 },
     addCustomBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.brand, paddingVertical: 12, justifyContent: 'center', borderStyle: 'dashed' },
