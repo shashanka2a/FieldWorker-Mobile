@@ -12,12 +12,12 @@ import {
     Modal,
     Pressable,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveEquipmentChecklist } from '@/lib/dailyReportStorage';
+import { getDateKey, saveEquipmentChecklist, getEquipmentForDate, EquipmentChecklistEntry } from '@/lib/dailyReportStorage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -100,6 +100,26 @@ export default function ChecklistScreen() {
     const [success, setSuccess] = useState(false);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+    useFocusEffect(
+        React.useCallback(() => {
+            let active = true;
+            (async () => {
+                const dateKey = getDateKey(selectedDate);
+                const data = await getEquipmentForDate(dateKey);
+                // Pre-fill with the first/most recent checklist entry if it exists
+                if (data.length > 0 && active) {
+                    const checklistEntries = data.filter((d): d is EquipmentChecklistEntry => 'formData' in d);
+                    if (checklistEntries.length > 0) {
+                        const latest = checklistEntries[checklistEntries.length - 1];
+                        setForm(latest.formData as unknown as FormData);
+                        setPhotos(latest.photos || []);
+                    }
+                }
+            })();
+            return () => { active = false; };
+        }, [selectedDate])
+    );
 
     const update = (key: keyof FormData, value: string) => {
         setForm((prev) => ({ ...prev, [key]: value }));

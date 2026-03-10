@@ -48,6 +48,7 @@ const TASK_TILES = [
     { id: 'attachments', name: 'Photos', route: '/attachments/', icon: 'camera', color: COLORS.brand },
     { id: 'safety', name: 'Safety', route: '/safety/', icon: 'shield-checkmark', color: COLORS.brand },
     { id: 'observations', name: 'Observations', route: '/observations/', icon: 'eye', color: COLORS.brand },
+    { id: 'incidents', name: 'Incidents', route: '/incidents/', icon: 'warning', color: COLORS.brand },
     { id: 'report', name: 'Report', route: '/report/preview', icon: 'bar-chart', color: COLORS.brand },
 ];
 

@@ -9,6 +9,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from 'expo-router';
 
 const COLORS = {
     brand: '#FF6633',
@@ -28,12 +30,11 @@ type FilterType = 'all' | 'today' | 'week';
 
 interface ActivityItem {
     id: string;
-    type: 'notes' | 'chemicals' | 'metrics' | 'survey' | 'equipment' | 'attachments' | 'report';
+    type: 'notes' | 'chemicals' | 'metrics' | 'survey' | 'equipment' | 'attachments' | 'report' | 'observations' | 'incidents';
     title: string;
     subtitle: string;
     timestamp: string;
-    icon: string;
-    color: string;
+    timestampDate: Date;
 }
 
 const ACTIVITY_ICON_MAP: Record<string, { icon: string; color: string }> = {
@@ -44,6 +45,8 @@ const ACTIVITY_ICON_MAP: Record<string, { icon: string; color: string }> = {
     equipment: { icon: 'construct', color: COLORS.amber },
     attachments: { icon: 'camera', color: COLORS.blue },
     report: { icon: 'bar-chart', color: COLORS.success },
+    observations: { icon: 'eye', color: COLORS.brand },
+    incidents: { icon: 'warning', color: COLORS.danger },
 };
 
 export default function ActivityScreen() {
@@ -52,14 +55,105 @@ export default function ActivityScreen() {
     const [refreshing, setRefreshing] = useState(false);
 
     const loadActivities = useCallback(async () => {
-        // Future implementation: aggregate all submission types from AsyncStorage
-        // For now, show empty state with a helpful message
-        setActivities([]);
-    }, []);
+        try {
+            const keys = await AsyncStorage.getAllKeys();
+            const prefixes = ['notes_', 'chemicals_', 'metrics_', 'survey_', 'equipment_', 'attachments_', 'observations_', 'incidents_'];
+            const relevantKeys = keys.filter(k => prefixes.some(p => k.startsWith(p)));
 
-    useEffect(() => {
+            if (relevantKeys.length === 0) {
+                setActivities([]);
+                return;
+            }
+
+            const kvs = await AsyncStorage.multiGet(relevantKeys);
+            const allItems: ActivityItem[] = [];
+
+            for (const [key, value] of kvs) {
+                if (!value) continue;
+                try {
+                    const parsed = JSON.parse(value);
+                    if (!Array.isArray(parsed)) continue;
+
+                    for (const entry of parsed) {
+                        if (!entry.timestamp) continue;
+
+                        let type = 'notes';
+                        if (key.startsWith('chemicals_')) type = 'chemicals';
+                        else if (key.startsWith('metrics_')) type = 'metrics';
+                        else if (key.startsWith('survey_')) type = 'survey';
+                        else if (key.startsWith('equipment_')) type = 'equipment';
+                        else if (key.startsWith('attachments_')) type = 'attachments';
+                        else if (key.startsWith('observations_')) type = 'observations';
+                        else if (key.startsWith('incidents_')) type = 'incidents';
+
+                        let title = 'Unknown Entry';
+                        let subtitle = 'Logged activity';
+
+                        if (type === 'notes') {
+                            title = 'New Note Created';
+                            subtitle = entry.notes?.slice(0, 50) + (entry.notes?.length > 50 ? '...' : '') || 'No description';
+                        } else if (type === 'chemicals') {
+                            title = 'Chemical Log';
+                            subtitle = `${entry.chemicals?.length || 0} chemicals applied`;
+                        } else if (type === 'metrics') {
+                            title = 'Daily Metrics Saved';
+                            const ops = entry.numberOfOperators ? `${entry.numberOfOperators} operators` : '';
+                            subtitle = ops || 'Metrics recorded';
+                        } else if (type === 'survey') {
+                            title = 'Site Survey Completed';
+                            subtitle = `${entry.questions?.length || 0} questions answered`;
+                        } else if (type === 'equipment') {
+                            title = typeof entry.formData !== 'undefined' ? 'Equipment Checklist' : 'Equipment Entry';
+                            subtitle = entry.formData?.machineNumber || 'Checklist completed';
+                        } else if (type === 'attachments') {
+                            title = 'Attachments Uploaded';
+                            subtitle = `${entry.fileNames?.length || 0} files attached`;
+                        } else if (type === 'observations') {
+                            title = `${entry.category || 'Observation'} Logged`;
+                            subtitle = entry.type || 'Observation recorded';
+                        } else if (type === 'incidents') {
+                            title = 'Incident Reported';
+                            subtitle = entry.title || 'Incident details saved';
+                        }
+
+                        const d = new Date(entry.timestamp);
+
+                        allItems.push({
+                            id: entry.id || Math.random().toString(),
+                            type: type as any,
+                            title,
+                            subtitle,
+                            timestamp: d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                            timestampDate: d,
+                        });
+                    }
+                } catch { }
+            }
+
+            // Sort newest first
+            allItems.sort((a, b) => b.timestampDate.getTime() - a.timestampDate.getTime());
+
+            // Filter
+            let filtered = allItems;
+            if (filter === 'today') {
+                const today = new Date();
+                filtered = allItems.filter(a => a.timestampDate.toDateString() === today.toDateString());
+            } else if (filter === 'week') {
+                const now = new Date();
+                const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+                filtered = allItems.filter(a => a.timestampDate >= weekAgo);
+            }
+
+            setActivities(filtered);
+        } catch (error) {
+            console.error('Error loading activities:', error);
+            setActivities([]);
+        }
+    }, [filter]);
+
+    useFocusEffect(useCallback(() => {
         loadActivities();
-    }, [loadActivities]);
+    }, [loadActivities]));
 
     const onRefresh = async () => {
         setRefreshing(true);

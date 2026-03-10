@@ -9,8 +9,10 @@ import {
     Alert,
     ActivityIndicator,
     Image,
+    Modal,
+    Pressable,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
@@ -62,8 +64,45 @@ export default function ChemicalsScreen() {
     const [photos, setPhotos] = useState<string[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [showUnitPicker, setShowUnitPicker] = useState<number | null>(null);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    useFocusEffect(
+        React.useCallback(() => {
+            let active = true;
+            (async () => {
+                const dateKey = getDateKey(selectedDate);
+                const data = await getChemicalsForDate(dateKey);
+                if (data.length > 0 && active) {
+                    const latest = data[data.length - 1]; // if multiple, use latest
+                    setApplicationType(latest.applicationType as ApplicationType);
+                    setNotes(latest.notes || '');
+                    setPhotos(latest.photos || []);
+
+                    // Map the loaded chemicals back
+                    if (latest.chemicals && latest.chemicals.length > 0) {
+                        const loadedChems = latest.chemicals.map((c) => ({
+                            name: c.name,
+                            quantity: c.quantity,
+                            unit: c.unit,
+                        }));
+                        // Ensure defaults exist or are overwritten
+                        const mergedChems = [...DEFAULT_CHEMICALS.map(dc => ({ ...dc }))];
+                        loadedChems.forEach((lc, idx) => {
+                            if (idx < mergedChems.length) {
+                                mergedChems[idx] = lc;
+                            } else {
+                                mergedChems.push(lc);
+                            }
+                        });
+                        setChemicals(mergedChems);
+                    }
+                }
+            })();
+            return () => { active = false; };
+        }, [selectedDate])
+    );
 
     const updateChemical = (index: number, field: keyof Chemical, value: string) => {
         setChemicals((prev) => {
@@ -194,15 +233,13 @@ export default function ChemicalsScreen() {
                                     keyboardType="decimal-pad"
                                 />
                                 <View style={styles.unitRow}>
-                                    {UNITS.map((u) => (
-                                        <TouchableOpacity
-                                            key={u}
-                                            style={[styles.unitChip, chem.unit === u && styles.unitChipActive]}
-                                            onPress={() => updateChemical(idx, 'unit', u)}
-                                        >
-                                            <Text style={[styles.unitText, chem.unit === u && styles.unitTextActive]}>{u}</Text>
-                                        </TouchableOpacity>
-                                    ))}
+                                    <TouchableOpacity
+                                        style={styles.unitSelectDrop}
+                                        onPress={() => setShowUnitPicker(idx)}
+                                    >
+                                        <Text style={styles.unitSelectText}>{chem.unit}</Text>
+                                        <Ionicons name="chevron-down" size={14} color={COLORS.subtitle} />
+                                    </TouchableOpacity>
                                 </View>
                             </View>
                             {warning && (
@@ -270,7 +307,35 @@ export default function ChemicalsScreen() {
                             <Text style={styles.submitText}>Save Chemical Log</Text>}
                 </TouchableOpacity>
             </ScrollView>
-        </View>
+
+            {/* Unit Picker Modal */}
+            <Modal visible={showUnitPicker !== null} transparent animationType="slide" onRequestClose={() => setShowUnitPicker(null)}>
+                <Pressable style={styles.modalBackdrop} onPress={() => setShowUnitPicker(null)}>
+                    <View style={styles.pickerSheet}>
+                        <View style={styles.pickerHandle} />
+                        <Text style={styles.pickerTitle}>Select Unit</Text>
+                        {UNITS.map((u) => {
+                            const isSelected = showUnitPicker !== null && chemicals[showUnitPicker]?.unit === u;
+                            return (
+                                <TouchableOpacity
+                                    key={u}
+                                    style={[styles.pickerItem, isSelected && styles.pickerItemActive]}
+                                    onPress={() => {
+                                        if (showUnitPicker !== null) {
+                                            updateChemical(showUnitPicker, 'unit', u);
+                                        }
+                                        setShowUnitPicker(null);
+                                    }}
+                                >
+                                    <Text style={[styles.pickerItemText, isSelected && { color: COLORS.brand }]}>{u}</Text>
+                                    {isSelected && <Ionicons name="checkmark" size={18} color={COLORS.brand} />}
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </View>
+                </Pressable>
+            </Modal>
+        </View >
     );
 }
 
@@ -293,11 +358,9 @@ const styles = StyleSheet.create({
     chemInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     qtyInput: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, color: '#fff', fontSize: 20, fontWeight: '700', width: 100, textAlign: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     qtyInputWarning: { borderColor: COLORS.warning },
-    unitRow: { flex: 1, flexDirection: 'row', gap: 6 },
-    unitChip: { flex: 1, alignItems: 'center', paddingVertical: 7, borderRadius: 10, backgroundColor: COLORS.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
-    unitChipActive: { backgroundColor: COLORS.brand, borderColor: COLORS.brand },
-    unitText: { color: COLORS.subtitle, fontSize: 13, fontWeight: '600' },
-    unitTextActive: { color: '#fff' },
+    unitRow: { flex: 1, flexDirection: 'row', justifyContent: 'flex-start' },
+    unitSelectDrop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, width: 110 },
+    unitSelectText: { color: '#fff', fontSize: 16, fontWeight: '600' },
     warningRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     warningText: { color: COLORS.warning, fontSize: 12 },
     addCustomBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.brand, paddingVertical: 12, justifyContent: 'center', borderStyle: 'dashed' },
@@ -312,5 +375,12 @@ const styles = StyleSheet.create({
     removeBtn: { position: 'absolute', top: -6, right: -6 },
     submitBtn: { backgroundColor: COLORS.brand, borderRadius: 16, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 8, shadowColor: COLORS.brand, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 6 },
     submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+    pickerSheet: { backgroundColor: COLORS.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40, gap: 4 },
+    pickerHandle: { width: 40, height: 4, backgroundColor: COLORS.border, borderRadius: 2, alignSelf: 'center', marginBottom: 12 },
+    pickerTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 8 },
+    pickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
+    pickerItemActive: {},
+    pickerItemText: { color: '#fff', fontSize: 15 },
 });
 

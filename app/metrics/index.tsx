@@ -13,9 +13,10 @@ import {
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect } from 'expo-router';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveMetrics } from '@/lib/dailyReportStorage';
+import { getDateKey, saveMetrics, getMetricsForDate } from '@/lib/dailyReportStorage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -55,6 +56,29 @@ export default function MetricsScreen() {
     const [success, setSuccess] = useState(false);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    useFocusEffect(
+        React.useCallback(() => {
+            let active = true;
+            (async () => {
+                const dateKey = getDateKey(selectedDate);
+                const data = await getMetricsForDate(dateKey);
+                // Pre-fill with the first/most recent metric entry if it exists
+                if (data.length > 0 && active) {
+                    const latest = data[data.length - 1]; // if multiple, use latest
+                    setValues({
+                        waterUsage: latest.waterUsage || '',
+                        acresCompleted: latest.acresCompleted || '',
+                        greenSpaceCompleted: latest.greenSpaceCompleted || '',
+                        numberOfOperators: latest.numberOfOperators || '',
+                    });
+                    setNotes(latest.notes || '');
+                    setPhotos(latest.photos || []);
+                }
+            })();
+            return () => { active = false; };
+        }, [selectedDate])
+    );
 
     const pickImage = async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();

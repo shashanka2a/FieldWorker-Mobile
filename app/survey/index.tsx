@@ -9,11 +9,11 @@ import {
     Alert,
     ActivityIndicator,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveSurvey, SurveyQuestionEntry } from '@/lib/dailyReportStorage';
+import { getDateKey, saveSurvey, getSurveyForDate, SurveyQuestionEntry } from '@/lib/dailyReportStorage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -56,6 +56,24 @@ export default function SurveyScreen() {
     const [success, setSuccess] = useState(false);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    useFocusEffect(
+        React.useCallback(() => {
+            let active = true;
+            (async () => {
+                const dateKey = getDateKey(selectedDate);
+                const data = await getSurveyForDate(dateKey);
+                // Pre-fill with the first/most recent survey entry if it exists
+                if (data.length > 0 && active) {
+                    const latest = data[data.length - 1]; // if multiple, use latest
+                    if (latest.questions && latest.questions.length > 0) {
+                        setQuestions(latest.questions);
+                    }
+                }
+            })();
+            return () => { active = false; };
+        }, [selectedDate])
+    );
 
     const setAnswer = (idx: number, answer: Answer) => {
         setQuestions((prev) => {

@@ -9,7 +9,7 @@ import {
     RefreshControl,
     Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
@@ -46,7 +46,7 @@ export default function IncidentsListScreen() {
         setIncidents(data.reverse());
     }, [selectedDate]);
 
-    useEffect(() => { loadIncidents(); }, [loadIncidents]);
+    useFocusEffect(useCallback(() => { loadIncidents(); }, [loadIncidents]));
 
     const onRefresh = async () => {
         setRefreshing(true);

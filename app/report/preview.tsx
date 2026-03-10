@@ -17,6 +17,7 @@ import {
     getDateKey,
     EquipmentChecklistEntry,
     ObservationEntry,
+    IncidentEntry,
 } from '@/lib/dailyReportStorage';
 
 const C = {
@@ -246,6 +247,30 @@ export default function ReportPreviewScreen() {
                         </SectionBlock>
                     )}
 
+                    {/* Incidents */}
+                    {report && report.incidents.length > 0 && (
+                        <SectionBlock title="Incidents">
+                            {report.incidents.map((inc) => (
+                                <View key={inc.id} style={rs.noteEntry}>
+                                    <View style={[rs.noteBullet, { backgroundColor: '#FF453A' }]} />
+                                    <View style={rs.noteContent}>
+                                        <Text style={rs.noteText}>{inc.title || 'Untitled Incident'}</Text>
+                                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 2 }}>
+                                            <Text style={rs.noteTime}>Status: {inc.status}</Text>
+                                            {inc.recordable && <Text style={[rs.noteTime, { color: '#FF453A' }]}>Recordable</Text>}
+                                        </View>
+                                        {inc.injuryIllnessType ? (
+                                            <Text style={[rs.noteText, { color: '#666', fontSize: 12, marginTop: 2 }]}>Type: {inc.injuryIllnessType}</Text>
+                                        ) : null}
+                                        {inc.description ? (
+                                            <Text style={[rs.noteText, { color: '#666', fontSize: 12, marginTop: 2 }]}>{inc.description}</Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+                            ))}
+                        </SectionBlock>
+                    )}
+
                     {/* Survey */}
                     {report && report.survey.length > 0 && (
                         <SectionBlock title="Site Survey">
@@ -265,7 +290,7 @@ export default function ReportPreviewScreen() {
                     )}
 
                     {/* Empty report */}
-                    {report && !report.notes.length && !report.metrics.length && !report.chemicals.length && !report.equipment.length && !report.survey.length && !report.observations.length && (
+                    {report && !report.notes.length && !report.metrics.length && !report.chemicals.length && !report.equipment.length && !report.survey.length && !report.observations.length && !report.incidents.length && (
                         <View style={rs.emptyReport}>
                             <Ionicons name="document-outline" size={40} color="#ccc" />
                             <Text style={rs.emptyReportText}>No data logged for this date</Text>
