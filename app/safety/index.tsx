@@ -7,9 +7,10 @@ import {
     StyleSheet,
     RefreshControl,
     TextInput,
+    Modal,
+    Pressable,
 } from 'react-native';
-import { router } from 'expo-router';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { getSafetyTalks, SafetyTalk, SafetyTalkStatus } from '@/lib/safetyStorage';
@@ -45,6 +46,7 @@ export default function SafetyListScreen() {
     const [talks, setTalks] = useState<SafetyTalk[]>([]);
     const [search, setSearch] = useState('');
     const [refreshing, setRefreshing] = useState(false);
+    const [showMenu, setShowMenu] = useState(false);
 
     const loadTalks = useCallback(async () => {
         const data = await getSafetyTalks();
@@ -74,29 +76,6 @@ export default function SafetyListScreen() {
         <View style={styles.container}>
             <ScreenHeader title="Safety Talks" />
 
-            {/* Tab Bar */}
-            <View style={styles.tabBar}>
-                {TAB_CONFIG.map((tab) => {
-                    const count = talks.filter((t) => t.status === tab.key).length;
-                    return (
-                        <TouchableOpacity
-                            key={tab.key}
-                            style={[styles.tab, activeTab === tab.key && { borderBottomColor: tab.color, borderBottomWidth: 2 }]}
-                            onPress={() => setActiveTab(tab.key)}
-                        >
-                            <Text style={[styles.tabText, activeTab === tab.key && { color: tab.color }]}>
-                                {tab.label}
-                            </Text>
-                            {count > 0 && (
-                                <View style={[styles.badge, { backgroundColor: tab.color + '25' }]}>
-                                    <Text style={[styles.badgeText, { color: tab.color }]}>{count}</Text>
-                                </View>
-                            )}
-                        </TouchableOpacity>
-                    );
-                })}
-            </View>
-
             {/* Search */}
             <View style={styles.searchWrap}>
                 <Ionicons name="search-outline" size={16} color={COLORS.subtitle} />
@@ -112,6 +91,25 @@ export default function SafetyListScreen() {
                         <Ionicons name="close-circle" size={16} color={COLORS.subtitle} />
                     </TouchableOpacity>
                 )}
+            </View>
+
+            {/* Tab Bar Segmented Control */}
+            <View style={styles.segmentedControl}>
+                {TAB_CONFIG.map((tab) => {
+                    const count = talks.filter((t) => t.status === tab.key).length;
+                    const isActive = activeTab === tab.key;
+                    return (
+                        <TouchableOpacity
+                            key={tab.key}
+                            style={[styles.segment, isActive && styles.segmentActive]}
+                            onPress={() => setActiveTab(tab.key)}
+                        >
+                            <Text style={[styles.segmentText, isActive && styles.segmentTextActive]}>
+                                {tab.label}
+                            </Text>
+                        </TouchableOpacity>
+                    );
+                })}
             </View>
 
             <ScrollView
@@ -158,83 +156,70 @@ export default function SafetyListScreen() {
                 )}
             </ScrollView>
 
-            {/* Bottom Action Bar */}
-            <View style={styles.bottomBar}>
-                <TouchableOpacity
-                    style={styles.bottomBtn}
-                    onPress={() => router.push('/safety/template?mode=start')}
-                    activeOpacity={0.85}
-                >
-                    <Ionicons name="play" size={20} color="#fff" />
-                    <Text style={styles.bottomBtnText}>Start Now</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[styles.bottomBtn, styles.bottomBtnSecondary]}
-                    onPress={() => router.push('/safety/template?mode=schedule')}
-                    activeOpacity={0.85}
-                >
-                    <Ionicons name="calendar-outline" size={20} color={COLORS.brand} />
-                    <Text style={[styles.bottomBtnText, { color: COLORS.brand }]}>Schedule</Text>
-                </TouchableOpacity>
-            </View>
+            {/* FAB button */}
+            <TouchableOpacity
+                style={styles.fab}
+                onPress={() => setShowMenu(true)}
+                activeOpacity={0.85}
+            >
+                <Ionicons name="add" size={28} color="#fff" />
+            </TouchableOpacity>
+
+            {/* Action Menu */}
+            <Modal visible={showMenu} transparent animationType="slide" onRequestClose={() => setShowMenu(false)}>
+                <Pressable style={styles.modalBackdrop} onPress={() => setShowMenu(false)}>
+                    <View style={styles.menuSheet}>
+                        <Text style={styles.menuTitle}>Create new</Text>
+                        <TouchableOpacity style={styles.menuItem} onPress={() => { setShowMenu(false); router.push('/safety/template?mode=start'); }}>
+                            <Text style={styles.menuItemTextLink}>Start talk</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.menuItem} onPress={() => { setShowMenu(false); router.push('/safety/template?mode=schedule'); }}>
+                            <Text style={styles.menuItemTextLink}>Schedule talks</Text>
+                        </TouchableOpacity>
+                        <View style={{ height: 8, backgroundColor: 'transparent' }} />
+                        <TouchableOpacity style={styles.menuCancelBtn} onPress={() => setShowMenu(false)}>
+                            <Text style={styles.menuCancelText}>Cancel</Text>
+                        </TouchableOpacity>
+                    </View>
+                </Pressable>
+            </Modal>
         </View>
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.surface },
-    tabBar: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border, backgroundColor: COLORS.card },
-    tab: { flex: 1, paddingVertical: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-    tabText: { color: COLORS.subtitle, fontSize: 14, fontWeight: '600' },
-    badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
+    searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 16, marginTop: 16, marginBottom: 12, backgroundColor: COLORS.card, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+    searchInput: { flex: 1, color: '#fff', fontSize: 16 },
+
+    segmentedControl: { flexDirection: 'row', marginHorizontal: 16, backgroundColor: COLORS.card, borderRadius: 8, padding: 2, marginBottom: 16 },
+    segment: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6, flexDirection: 'row', justifyContent: 'center', gap: 6 },
+    segmentActive: { backgroundColor: COLORS.brand },
+    segmentText: { color: COLORS.subtitle, fontSize: 13, fontWeight: '600' },
+    segmentTextActive: { color: '#fff' },
+    badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
     badgeText: { fontSize: 11, fontWeight: '700' },
-    searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, margin: 16, backgroundColor: COLORS.card, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
-    searchInput: { flex: 1, color: '#fff', fontSize: 15 },
+
     scroll: { flex: 1 },
     scrollContent: { paddingHorizontal: 16, paddingBottom: 120, gap: 10 },
     emptyState: { alignItems: 'center', paddingTop: 60, gap: 12, paddingHorizontal: 32 },
     emptyIconWrap: { width: 72, height: 72, borderRadius: 20, backgroundColor: COLORS.brand + '18', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
     emptyTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
     emptySubtitle: { color: COLORS.subtitle, fontSize: 14, textAlign: 'center', lineHeight: 22 },
-    talkCard: {
-        backgroundColor: COLORS.card,
-        borderRadius: 16,
-        padding: 14,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: COLORS.border,
-    },
+    talkCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     talkIconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
     talkInfo: { flex: 1, gap: 4 },
     talkName: { color: '#fff', fontSize: 14, fontWeight: '600', lineHeight: 20 },
     talkDate: { color: COLORS.subtitle, fontSize: 12 },
-    bottomBar: {
-        flexDirection: 'row',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-        paddingBottom: 28,
-        backgroundColor: COLORS.card,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        borderTopColor: COLORS.border,
-    },
-    bottomBtn: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        paddingVertical: 14,
-        borderRadius: 14,
-        backgroundColor: COLORS.brand,
-    },
-    bottomBtnSecondary: {
-        backgroundColor: COLORS.brand + '15',
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: COLORS.brand + '40',
-    },
-    bottomBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+    
+    fab: { position: 'absolute', bottom: 32, right: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.brand, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
+    
+    modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+    menuSheet: { paddingHorizontal: 16, paddingBottom: 36, gap: 0 },
+    menuTitle: { color: COLORS.subtitle, fontSize: 13, fontWeight: '500', textAlign: 'center', paddingVertical: 12, backgroundColor: COLORS.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, overflow: 'hidden' },
+    menuItem: { backgroundColor: COLORS.card, paddingVertical: 18, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border },
+    menuItemTextLink: { color: '#0A84FF', fontSize: 20, textAlign: 'center' },
+    menuCancelBtn: { backgroundColor: COLORS.card, paddingVertical: 18, borderRadius: 16, marginTop: 8 },
+    menuCancelText: { color: '#0A84FF', fontSize: 20, fontWeight: '600', textAlign: 'center' },
 });
 
