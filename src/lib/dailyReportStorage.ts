@@ -4,6 +4,18 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { uploadPhotosArray, uploadImageToCloudinary } from './cloudinary';
+import {
+    syncNoteToSupabase,
+    syncChemicalsToSupabase,
+    syncMetricsToSupabase,
+    syncSurveyToSupabase,
+    syncEquipmentToSupabase,
+    syncEquipmentChecklistToSupabase,
+    syncObservationToSupabase,
+    syncIncidentToSupabase,
+    syncSignedReportToSupabase
+} from './supabaseSync';
 
 // --- Date Utilities ---
 
@@ -215,30 +227,41 @@ async function appendEntry<T>(
 // --- Save Functions ---
 
 export async function saveNotes(dateKey: string, entry: NoteEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.notes, dateKey, entry);
+    syncNoteToSupabase(entry).catch(console.error);
 }
 
 export async function saveChemicals(dateKey: string, entry: ChemicalEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.chemicals, dateKey, entry);
+    syncChemicalsToSupabase(entry).catch(console.error);
 }
 
 export async function saveMetrics(dateKey: string, entry: MetricsEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.metrics, dateKey, entry);
+    syncMetricsToSupabase(entry).catch(console.error);
 }
 
 export async function saveSurvey(dateKey: string, entry: SurveyEntry): Promise<void> {
     await appendEntry(STORAGE_KEYS.survey, dateKey, entry);
+    syncSurveyToSupabase(entry).catch(console.error);
 }
 
 export async function saveEquipment(dateKey: string, entry: EquipmentEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.equipment, dateKey, entry);
+    syncEquipmentToSupabase(entry).catch(console.error);
 }
 
 export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.material, dateKey, entry);
 }
 
 export async function saveAttachments(dateKey: string, entry: AttachmentEntry): Promise<void> {
+    if (entry.previews?.length) entry.previews = await uploadPhotosArray(entry.previews);
     await appendEntry(STORAGE_KEYS.attachments, dateKey, entry);
 }
 
@@ -246,14 +269,25 @@ export async function saveEquipmentChecklist(
     dateKey: string,
     entry: EquipmentChecklistEntry
 ): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
+    if (entry.signature) entry.signature = (await uploadImageToCloudinary(entry.signature)) || undefined;
+    
     await appendEntry(STORAGE_KEYS.equipment, dateKey, entry as unknown as EquipmentEntry);
+    syncEquipmentChecklistToSupabase(entry).catch(console.error);
 }
 
 export async function saveObservation(dateKey: string, entry: ObservationEntry): Promise<void> {
+    if (entry.resolutionPhotos?.length) entry.resolutionPhotos = await uploadPhotosArray(entry.resolutionPhotos);
+    if (entry.attachments?.length) entry.attachments = await uploadPhotosArray(entry.attachments);
+
     await appendEntry(STORAGE_KEYS.observations, dateKey, entry);
+    syncObservationToSupabase(entry).catch(console.error);
 }
 
 export async function updateObservation(dateKey: string, entry: ObservationEntry): Promise<void> {
+    if (entry.resolutionPhotos?.length) entry.resolutionPhotos = await uploadPhotosArray(entry.resolutionPhotos);
+    if (entry.attachments?.length) entry.attachments = await uploadPhotosArray(entry.attachments);
+
     const key = STORAGE_KEYS.observations(dateKey);
     const arr = await readArray<ObservationEntry>(key);
     const idx = arr.findIndex((o) => o.id === entry.id);
@@ -264,6 +298,7 @@ export async function updateObservation(dateKey: string, entry: ObservationEntry
         arr.push(entry);
         await writeArray(key, arr);
     }
+    syncObservationToSupabase(entry).catch(console.error);
 }
 
 export async function deleteObservation(dateKey: string, id: string): Promise<void> {
@@ -273,10 +308,14 @@ export async function deleteObservation(dateKey: string, id: string): Promise<vo
 }
 
 export async function saveIncident(dateKey: string, entry: IncidentEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.incidents, dateKey, entry);
+    syncIncidentToSupabase(entry).catch(console.error);
 }
 
 export async function updateIncident(dateKey: string, entry: IncidentEntry): Promise<void> {
+    if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
+
     const key = STORAGE_KEYS.incidents(dateKey);
     const arr = await readArray<IncidentEntry>(key);
     const idx = arr.findIndex((o) => o.id === entry.id);
@@ -287,6 +326,7 @@ export async function updateIncident(dateKey: string, entry: IncidentEntry): Pro
         arr.push(entry);
         await writeArray(key, arr);
     }
+    syncIncidentToSupabase(entry).catch(console.error);
 }
 
 export async function deleteIncident(dateKey: string, id: string): Promise<void> {
@@ -341,6 +381,10 @@ export async function saveSignedReport(
     dateKey: string,
     entry: SignedReportEntry
 ): Promise<void> {
+    if (entry.signatureDataUrl) {
+        entry.signatureDataUrl = (await uploadImageToCloudinary(entry.signatureDataUrl)) || entry.signatureDataUrl;
+    }
+
     await AsyncStorage.setItem(STORAGE_KEYS.signed(dateKey), JSON.stringify(entry));
     const keys = await getSignedReportDateKeys();
     if (!keys.includes(dateKey)) {
@@ -348,6 +392,8 @@ export async function saveSignedReport(
         keys.sort().reverse();
         await AsyncStorage.setItem(SIGNED_REPORT_DATE_KEYS, JSON.stringify(keys));
     }
+
+    syncSignedReportToSupabase(entry).catch(console.error);
 }
 
 export async function getSignedReportDateKeys(): Promise<string[]> {

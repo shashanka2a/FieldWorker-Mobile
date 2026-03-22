@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { syncSafetyTalkToSupabase } from './supabaseSync';
 
 export type SafetyTalkStatus = 'upcoming' | 'missed' | 'conducted';
 
@@ -54,6 +55,7 @@ export async function addScheduledSafetyTalk(
     };
     talks.push(talk);
     await writeTalks(talks);
+    syncSafetyTalkToSupabase(talk).catch(console.error);
 }
 
 export async function updateScheduledSafetyTalk(
@@ -67,6 +69,7 @@ export async function updateScheduledSafetyTalk(
     if (idx === -1) return;
     talks[idx] = { ...talks[idx], date: dateKey, templateId, templateName };
     await writeTalks(talks);
+    syncSafetyTalkToSupabase(talks[idx]).catch(console.error);
 }
 
 export async function deleteScheduledSafetyTalk(id: string): Promise<void> {
@@ -80,4 +83,5 @@ export async function markSafetyTalkConducted(id: string): Promise<void> {
     if (idx === -1) return;
     talks[idx] = { ...talks[idx], status: 'conducted' };
     await writeTalks(talks);
+    syncSafetyTalkToSupabase(talks[idx]).catch(console.error);
 }
