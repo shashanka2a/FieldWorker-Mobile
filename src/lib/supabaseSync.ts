@@ -9,7 +9,8 @@ import type {
     EquipmentChecklistEntry,
     ObservationEntry,
     IncidentEntry,
-    SignedReportEntry
+    SignedReportEntry,
+    AttachmentEntry
 } from './dailyReportStorage';
 import type { SafetyTalk } from './safetyStorage';
 
@@ -234,10 +235,27 @@ export async function syncSignedReportToSupabase(entry: SignedReportEntry) {
     const projectId = await getProjectId(entry.projectName);
     if (!projectId) return;
 
-    await supabase.from('daily_signed_reports').insert([{
+    await supabase.from('daily_signed_reports').upsert([{
         project_id: projectId,
+        report_date: entry.reportDate,
         prepared_by: entry.preparedBy,
-        signature_url: entry.signatureDataUrl ? await uploadImageToCloudinary(entry.signatureDataUrl) : '',
-        signed_at: entry.signedAt
+        signature_url: entry.signatureDataUrl ? await uploadImageToCloudinary(entry.signatureDataUrl) : null,
+        signed_at: entry.signedAt || null,
+        report_url: entry.reportUrl || null,
+        unsigned_report_url: entry.unsignedReportUrl || null,
+        is_signed: entry.isSigned
+    }], { onConflict: 'project_id,report_date' });
+}
+
+export async function syncAttachmentToSupabase(entry: AttachmentEntry) {
+    const projectId = await getProjectId(entry.project.name);
+    if (!projectId) return;
+
+    await supabase.from('attachments').insert([{
+        project_id: projectId,
+        notes: entry.notes || '',
+        file_names: entry.fileNames || [],
+        cloudinary_urls: entry.previews || [],
+        logged_at: entry.timestamp
     }]);
 }

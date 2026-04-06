@@ -14,7 +14,8 @@ import { Ionicons } from '@expo/vector-icons';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '@/context/AppContext';
-import { saveSignedReport, getDateKey } from '@/lib/dailyReportStorage';
+import { saveSignedReport, getDateKey, getReportForDate } from '@/lib/dailyReportStorage';
+import { generateReportPdf } from '@/lib/reportPdf';
 
 const COLORS = {
     brand: '#FF6633',
@@ -68,11 +69,31 @@ export default function SignReportScreen() {
         setSaving(true);
         try {
             const dateKey = getDateKey(reportDate);
-            await saveSignedReport(dateKey, {
+            
+            // Get existing report from storage to preserve links if any
+            const existingReportData = await getReportForDate(reportDate, selectedProject.name);
+            const existingSignedInfo = existingReportData.signed;
+            
+            // Temporary signed report object for PDF generation
+            const signedReportInfo = {
+                reportDate: dateKey,
                 signedAt: new Date().toISOString(),
                 preparedBy: name.trim(),
                 signatureDataUrl: signatureData,
                 projectName: selectedProject.name,
+                isSigned: true,
+                unsignedReportUrl: existingSignedInfo?.unsignedReportUrl,
+            };
+            
+            // Generate the signed PDF
+            const reportPdfUrl = await generateReportPdf({
+                ...existingReportData,
+                signed: signedReportInfo
+            }, true);
+
+            await saveSignedReport(dateKey, {
+                ...signedReportInfo,
+                reportUrl: reportPdfUrl || undefined,
             });
             setSaved(true);
             setTimeout(() => {

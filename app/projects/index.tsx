@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
@@ -16,18 +16,33 @@ const COLORS = {
 const PROJECT_ICONS: string[] = ['sunny', 'water', 'flash'];
 
 export default function ProjectsScreen() {
-    const { projects, selectedProject, setSelectedProject } = useAppContext();
+    const { projects, selectedProject, setSelectedProject, loadingProjects, refreshProjects } = useAppContext();
+
+    if (loadingProjects) {
+        return (
+            <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
+                <ScreenHeader title="Projects" subtitle="Select active project" />
+                <ActivityIndicator size="large" color={COLORS.brand} style={{ marginTop: 60 }} />
+                <Text style={{ color: COLORS.subtitle, marginTop: 12, fontSize: 14 }}>Loading projects...</Text>
+            </View>
+        );
+    }
 
     return (
         <View style={styles.container}>
             <ScreenHeader title="Projects" subtitle="Select active project" />
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 <Text style={styles.sectionLabel}>Active Projects</Text>
-                {projects.map((project, idx) => {
-                    const isActive = project.name === selectedProject.name;
+                {projects.length === 0 ? (
+                    <View style={[styles.infoCard, { marginTop: 20, alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8 }]}>
+                        <Ionicons name="folder-open-outline" size={32} color={COLORS.subtitle} />
+                        <Text style={{ color: COLORS.subtitle, fontSize: 14, textAlign: 'center' }}>{'No projects found in the database.\nAsk your supervisor to add projects.'}</Text>
+                    </View>
+                ) : projects.map((project, idx) => {
+                    const isActive = project.id === selectedProject.id;
                     return (
                         <TouchableOpacity
-                            key={project.name}
+                            key={project.id ?? project.name}
                             style={[styles.projectCard, isActive && styles.projectCardActive]}
                             onPress={() => setSelectedProject(project)}
                             activeOpacity={0.8}

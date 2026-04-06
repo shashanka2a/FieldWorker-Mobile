@@ -6,6 +6,7 @@ import {
     TouchableOpacity,
     StyleSheet,
     ActivityIndicator,
+    Image,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +19,9 @@ import {
     EquipmentChecklistEntry,
     ObservationEntry,
     IncidentEntry,
+    saveUnsignedReport,
 } from '@/lib/dailyReportStorage';
+import { generateReportPdf } from '@/lib/reportPdf';
 
 const C = {
     brand: '#FF6633',
@@ -58,6 +61,7 @@ export default function ReportPreviewScreen() {
 
     const [report, setReport] = useState<ReportData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [syncing, setSyncing] = useState(false);
 
     const reportDate = dateParam
         ? (() => { const [y, m, d] = dateParam.split('-').map(Number); return new Date(y, m - 1, d); })()
@@ -71,6 +75,31 @@ export default function ReportPreviewScreen() {
     }, [reportDate, selectedProject.name]);
 
     useEffect(() => { loadReport(); }, [loadReport]);
+
+    const handleSyncUnsigned = async () => {
+        if (!report) return;
+        setSyncing(true);
+        try {
+            const dateKey = getDateKey(reportDate);
+            // Generate unsigned PDF
+            const unsignedReportUrl = await generateReportPdf(report, false);
+            
+            await saveUnsignedReport(dateKey, {
+                reportDate: dateKey,
+                preparedBy: report.signed?.preparedBy || 'Draft',
+                projectName: selectedProject.name,
+                unsignedReportUrl: unsignedReportUrl || undefined,
+                isSigned: false,
+            });
+            alert('Unsigned report synced to cloud!');
+            loadReport();
+        } catch (e) {
+            console.error(e);
+            alert('Failed to sync report.');
+        } finally {
+            setSyncing(false);
+        }
+    };
 
     const dateLabel = reportDate.toLocaleDateString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
@@ -144,6 +173,13 @@ export default function ReportPreviewScreen() {
                                     <View style={rs.noteContent}>
                                         <Text style={rs.noteCat}>{note.category}</Text>
                                         <Text style={rs.noteText}>{note.notes}</Text>
+                                        {note.photos && note.photos.length > 0 && (
+                                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+                                                {note.photos.map((uri, i) => (
+                                                    <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                                ))}
+                                            </ScrollView>
+                                        )}
                                         <Text style={rs.noteTime}>{new Date(note.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</Text>
                                     </View>
                                 </View>
@@ -160,6 +196,13 @@ export default function ReportPreviewScreen() {
                                     {m.acresCompleted && <Row label="Acres Completed" value={`${m.acresCompleted} acres`} />}
                                     {m.numberOfOperators && <Row label="Operators" value={m.numberOfOperators} />}
                                     {m.notes && <Row label="Notes" value={m.notes} />}
+                                    {m.photos && m.photos.length > 0 && (
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
+                                            {m.photos.map((uri, i) => (
+                                                <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                            ))}
+                                        </ScrollView>
+                                    )}
                                 </View>
                             ))}
                         </SectionBlock>
@@ -178,6 +221,13 @@ export default function ReportPreviewScreen() {
                                     {entry.chemicals.map((chem, ci) => (
                                         <Row key={`${entry.id}-${ci}`} label={chem.name} value={`${chem.quantity} ${chem.unit}`} />
                                     ))}
+                                    {entry.photos && entry.photos.length > 0 && (
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
+                                            {entry.photos.map((uri, i) => (
+                                                <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                            ))}
+                                        </ScrollView>
+                                    )}
                                 </View>
                             ))}
                         </SectionBlock>
@@ -202,6 +252,13 @@ export default function ReportPreviewScreen() {
                                             <Row label="Hoses" value={cl.formData.hoses} />
                                             <Row label="Fan Belt" value={cl.formData.fanBelt} />
                                             {cl.formData.repairsNotes && <Row label="Repairs/Issues" value={cl.formData.repairsNotes} />}
+                                            {cl.photos && cl.photos.length > 0 && (
+                                                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
+                                                    {cl.photos.map((uri, i) => (
+                                                        <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                                    ))}
+                                                </ScrollView>
+                                            )}
                                         </View>
                                     );
                                 })}
@@ -240,6 +297,16 @@ export default function ReportPreviewScreen() {
                                         {obs.description ? (
                                             <Text style={[rs.noteText, { color: '#666', fontSize: 12 }]}>{obs.description}</Text>
                                         ) : null}
+                                        {(obs.attachments?.length || obs.resolutionPhotos?.length) ? (
+                                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+                                                {obs.attachments?.map((uri, i) => (
+                                                    <Image key={`att-${i}`} source={{ uri }} style={rs.photoPreview} />
+                                                ))}
+                                                {obs.resolutionPhotos?.map((uri, i) => (
+                                                    <Image key={`res-${i}`} source={{ uri }} style={rs.photoPreview} />
+                                                ))}
+                                            </ScrollView>
+                                        ) : null}
                                         <Text style={rs.noteTime}>Status: {obs.status}</Text>
                                     </View>
                                 </View>
@@ -265,6 +332,13 @@ export default function ReportPreviewScreen() {
                                         {inc.description ? (
                                             <Text style={[rs.noteText, { color: '#666', fontSize: 12, marginTop: 2 }]}>{inc.description}</Text>
                                         ) : null}
+                                        {inc.photos && inc.photos.length > 0 && (
+                                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+                                                {inc.photos.map((uri, i) => (
+                                                    <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                                ))}
+                                            </ScrollView>
+                                        )}
                                     </View>
                                 </View>
                             ))}
@@ -289,8 +363,30 @@ export default function ReportPreviewScreen() {
                         </SectionBlock>
                     )}
 
+                    {/* Attachments */}
+                    {report && report.attachments.length > 0 && (
+                        <SectionBlock title="General Attachments">
+                            {report.attachments.map((att) => (
+                                <View key={att.id} style={rs.noteEntry}>
+                                    <View style={rs.noteBullet} />
+                                    <View style={rs.noteContent}>
+                                        {att.notes && <Text style={rs.noteText}>{att.notes}</Text>}
+                                        {att.previews && att.previews.length > 0 && (
+                                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+                                                {att.previews.map((uri, i) => (
+                                                    <Image key={i} source={{ uri }} style={rs.photoPreview} />
+                                                ))}
+                                            </ScrollView>
+                                        )}
+                                        <Text style={rs.noteTime}>{new Date(att.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</Text>
+                                    </View>
+                                </View>
+                            ))}
+                        </SectionBlock>
+                    )}
+
                     {/* Empty report */}
-                    {report && !report.notes.length && !report.metrics.length && !report.chemicals.length && !report.equipment.length && !report.survey.length && !report.observations.length && !report.incidents.length && (
+                    {report && !report.notes.length && !report.metrics.length && !report.chemicals.length && !report.equipment.length && !report.survey.length && !report.observations.length && !report.incidents.length && !report.attachments.length && (
                         <View style={rs.emptyReport}>
                             <Ionicons name="document-outline" size={40} color="#ccc" />
                             <Text style={rs.emptyReportText}>No data logged for this date</Text>
@@ -319,7 +415,16 @@ export default function ReportPreviewScreen() {
 
             {/* Footer */}
             {!isSigned && (
-                <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
+                <View style={[styles.footer, { paddingBottom: insets.bottom + 16, gap: 12 }]}>
+                    <TouchableOpacity
+                        style={[styles.syncBtn, syncing && { opacity: 0.7 }]}
+                        onPress={handleSyncUnsigned}
+                        disabled={syncing}
+                    >
+                        {syncing ? <ActivityIndicator color={C.brand} size="small" /> : <Ionicons name="cloud-upload" size={18} color={C.brand} />}
+                        <Text style={styles.syncBtnText}>{syncing ? 'Syncing...' : 'Sync Unsigned Report'}</Text>
+                    </TouchableOpacity>
+
                     <TouchableOpacity
                         style={styles.signBtn}
                         onPress={() => router.push(`/report/sign?date=${dateKey}`)}
@@ -357,6 +462,8 @@ const styles = StyleSheet.create({
     footer: { backgroundColor: C.card, padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
     signBtn: { backgroundColor: C.brand, borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: C.brand, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 10, elevation: 6 },
     signBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    syncBtn: { backgroundColor: 'transparent', borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 2, borderColor: C.brand },
+    syncBtnText: { color: C.brand, fontSize: 16, fontWeight: '700' },
 });
 
 const rs = StyleSheet.create({
@@ -385,4 +492,6 @@ const rs = StyleSheet.create({
     unsignedText: { color: '#BBB', fontSize: 13 },
     emptyReport: { padding: 40, alignItems: 'center', gap: 10 },
     emptyReportText: { color: '#999', fontSize: 14 },
+    attachmentPreview: { width: 100, height: 100, borderRadius: 8, backgroundColor: '#f0f0f0' }, // DEPRECATED: use photoPreview
+    photoPreview: { width: 100, height: 100, borderRadius: 8, backgroundColor: '#f0f0f0', borderWidth: 1, borderColor: '#eee' },
 });

@@ -8,7 +8,7 @@ import {
     Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppContext } from '@/context/AppContext';
 
@@ -21,42 +21,89 @@ const COLORS = {
     white: '#FFFFFF',
     blue: '#0A84FF',
     danger: '#FF453A',
+    success: '#30D158',
+    amber: '#FF9F0A',
 };
 
 interface MenuItemProps {
     icon: string;
     label: string;
     subtitle?: string;
+    route?: string;
     onPress: () => void;
     isDestructive?: boolean;
     showArrow?: boolean;
     iconColor?: string;
     iconBg?: string;
+    active?: boolean;
 }
 
-function MenuItem({ icon, label, subtitle, onPress, isDestructive, showArrow = true, iconColor, iconBg }: MenuItemProps) {
+function MenuItem({
+    icon,
+    label,
+    subtitle,
+    onPress,
+    isDestructive,
+    showArrow = true,
+    iconColor,
+    iconBg,
+    active,
+}: MenuItemProps) {
+    const resolvedIconColor = active
+        ? COLORS.blue
+        : iconColor ?? (isDestructive ? COLORS.danger : COLORS.brand);
+
+    const resolvedIconBg = active
+        ? COLORS.blue + '25'
+        : iconBg ?? (isDestructive ? COLORS.danger + '20' : COLORS.brand + '20');
+
     return (
-        <TouchableOpacity style={styles.menuItem} onPress={onPress} activeOpacity={0.7}>
-            <View style={[styles.menuIcon, { backgroundColor: iconBg ?? (isDestructive ? COLORS.danger + '20' : COLORS.brand + '20') }]}>
-                <Ionicons
-                    name={icon as any}
-                    size={20}
-                    color={iconColor ?? (isDestructive ? COLORS.danger : COLORS.brand)}
-                />
+        <TouchableOpacity
+            style={[styles.menuItem, active && styles.menuItemActive]}
+            onPress={onPress}
+            activeOpacity={0.7}
+        >
+            <View style={[styles.menuIcon, { backgroundColor: resolvedIconBg }]}>
+                <Ionicons name={icon as any} size={20} color={resolvedIconColor} />
             </View>
             <View style={styles.menuContent}>
-                <Text style={[styles.menuLabel, isDestructive && { color: COLORS.danger }]}>{label}</Text>
+                <Text style={[
+                    styles.menuLabel,
+                    isDestructive && { color: COLORS.danger },
+                    active && { color: COLORS.blue, fontWeight: '700' },
+                ]}>
+                    {label}
+                </Text>
                 {subtitle && <Text style={styles.menuSubtitle}>{subtitle}</Text>}
             </View>
             {showArrow && (
-                <Ionicons name="chevron-forward" size={16} color={COLORS.subtitle} />
+                <Ionicons
+                    name="chevron-forward"
+                    size={16}
+                    color={active ? COLORS.blue : COLORS.subtitle}
+                />
             )}
         </TouchableOpacity>
     );
 }
 
+interface SectionProps {
+    label: string;
+    children: React.ReactNode;
+}
+
+function Section({ label, children }: SectionProps) {
+    return (
+        <View style={styles.section}>
+            <Text style={styles.sectionLabel}>{label}</Text>
+            <View style={styles.menuCard}>{children}</View>
+        </View>
+    );
+}
+
 export default function MoreScreen() {
     const { currentUser } = useAppContext();
+    const pathname = usePathname();
 
     const handleSignOut = () => {
         Alert.alert(
@@ -69,6 +116,8 @@ export default function MoreScreen() {
         );
     };
 
+    const is = (route: string) => pathname === route || pathname.startsWith(route + '/');
+
     return (
         <SafeAreaView style={styles.container} edges={['top']}>
             <ScrollView
@@ -76,14 +125,13 @@ export default function MoreScreen() {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
             >
-                {/* Header */}
                 <Text style={styles.title}>More</Text>
 
                 {/* Profile Card */}
                 <View style={styles.profileCard}>
                     <View style={styles.avatar}>
                         <Text style={styles.avatarText}>
-                            {currentUser.name.split(' ').map((n) => n[0]).join('')}
+                            {currentUser.name.split(' ').map((n) => n[0]).join('').slice(0, 2)}
                         </Text>
                     </View>
                     <View style={styles.profileInfo}>
@@ -91,19 +139,20 @@ export default function MoreScreen() {
                         <Text style={styles.profileRole}>{currentUser.role}</Text>
                     </View>
                     <View style={styles.profileBadge}>
+                        <View style={styles.profileBadgeDot} />
                         <Text style={styles.profileBadgeText}>Active</Text>
                     </View>
                 </View>
 
-                {/* Reports Section */}
-                <Text style={styles.sectionLabel}>Reports & History</Text>
-                <View style={styles.menuCard}>
+                {/* Reports & History */}
+                <Section label="Reports & History">
                     <MenuItem
                         icon="document-text-outline"
                         label="Signed Reports"
                         subtitle="View completed daily reports"
-                        iconBg="#0A84FF20"
+                        iconBg={COLORS.blue + '20'}
                         iconColor={COLORS.blue}
+                        active={is('/reports')}
                         onPress={() => router.push('/reports')}
                     />
                     <View style={styles.divider} />
@@ -111,40 +160,41 @@ export default function MoreScreen() {
                         icon="images-outline"
                         label="Gallery"
                         subtitle="All captured photos"
-                        iconBg="#30D15820"
-                        iconColor="#30D158"
+                        iconBg={COLORS.success + '20'}
+                        iconColor={COLORS.success}
+                        active={is('/gallery')}
                         onPress={() => router.push('/gallery')}
                     />
-                </View>
+                </Section>
 
-                {/* Projects Section */}
-                <Text style={styles.sectionLabel}>Work</Text>
-                <View style={styles.menuCard}>
+                {/* Work */}
+                <Section label="Work">
                     <MenuItem
                         icon="business-outline"
                         label="Projects"
                         subtitle="Manage field projects"
-                        iconBg="#FF9F0A20"
-                        iconColor="#FF9F0A"
+                        iconBg={COLORS.amber + '20'}
+                        iconColor={COLORS.amber}
+                        active={is('/projects')}
                         onPress={() => router.push('/projects')}
                     />
-                </View>
+                </Section>
 
-                {/* App Section */}
-                <Text style={styles.sectionLabel}>App</Text>
-                <View style={styles.menuCard}>
+                {/* App */}
+                <Section label="App">
                     <MenuItem
                         icon="settings-outline"
                         label="Settings"
                         subtitle="App preferences"
-                        iconBg="#98989D20"
+                        iconBg={COLORS.subtitle + '20'}
                         iconColor={COLORS.subtitle}
+                        active={is('/settings')}
                         onPress={() => router.push('/settings')}
                     />
-                </View>
+                </Section>
 
                 {/* Sign Out */}
-                <View style={[styles.menuCard, { marginTop: 8 }]}>
+                <View style={[styles.menuCard, { marginTop: 4 }]}>
                     <MenuItem
                         icon="log-out-outline"
                         label="Sign Out"
@@ -154,7 +204,6 @@ export default function MoreScreen() {
                     />
                 </View>
 
-                {/* App Version */}
                 <Text style={styles.version}>FieldWorker v1.0.0</Text>
             </ScrollView>
         </SafeAreaView>
@@ -166,8 +215,15 @@ const styles = StyleSheet.create({
     scrollView: { flex: 1 },
     scrollContent: { paddingHorizontal: 16, paddingBottom: 100 },
 
-    title: { color: '#fff', fontSize: 28, fontWeight: '700', marginTop: 8, marginBottom: 20 },
+    title: {
+        color: '#fff',
+        fontSize: 28,
+        fontWeight: '700',
+        marginTop: 8,
+        marginBottom: 20,
+    },
 
+    // Profile card
     profileCard: {
         backgroundColor: COLORS.card,
         borderRadius: 20,
@@ -175,7 +231,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 14,
-        marginBottom: 24,
+        marginBottom: 28,
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: COLORS.border,
     },
@@ -192,36 +248,53 @@ const styles = StyleSheet.create({
     profileName: { color: '#fff', fontSize: 16, fontWeight: '700' },
     profileRole: { color: COLORS.subtitle, fontSize: 13, marginTop: 2 },
     profileBadge: {
-        backgroundColor: '#30D15820',
-        borderRadius: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: COLORS.success + '20',
+        borderRadius: 10,
         paddingHorizontal: 10,
-        paddingVertical: 4,
+        paddingVertical: 5,
     },
-    profileBadgeText: { color: '#30D158', fontSize: 12, fontWeight: '600' },
+    profileBadgeDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: COLORS.success,
+    },
+    profileBadgeText: { color: COLORS.success, fontSize: 12, fontWeight: '600' },
 
+    // Sections
+    section: { marginBottom: 16 },
     sectionLabel: {
         color: COLORS.subtitle,
-        fontSize: 12,
-        fontWeight: '600',
+        fontSize: 11,
+        fontWeight: '700',
         textTransform: 'uppercase',
-        letterSpacing: 0.8,
+        letterSpacing: 1,
         marginBottom: 8,
         marginLeft: 4,
     },
 
+    // Menu
     menuCard: {
         backgroundColor: COLORS.card,
         borderRadius: 16,
         overflow: 'hidden',
-        marginBottom: 16,
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: COLORS.border,
     },
     menuItem: {
         flexDirection: 'row',
         alignItems: 'center',
-        padding: 14,
+        paddingVertical: 13,
+        paddingHorizontal: 14,
         gap: 12,
+    },
+    menuItemActive: {
+        backgroundColor: COLORS.blue + '12',
+        borderLeftWidth: 3,
+        borderLeftColor: COLORS.blue,
     },
     menuIcon: {
         width: 38,
@@ -233,7 +306,17 @@ const styles = StyleSheet.create({
     menuContent: { flex: 1 },
     menuLabel: { color: '#fff', fontSize: 15, fontWeight: '600' },
     menuSubtitle: { color: COLORS.subtitle, fontSize: 12, marginTop: 2 },
-    divider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginLeft: 64 },
+    divider: {
+        height: StyleSheet.hairlineWidth,
+        backgroundColor: COLORS.border,
+        marginLeft: 64,
+    },
 
-    version: { color: COLORS.subtitle, fontSize: 12, textAlign: 'center', marginTop: 8 },
+    version: {
+        color: COLORS.subtitle,
+        fontSize: 12,
+        textAlign: 'center',
+        marginTop: 20,
+        marginBottom: 8,
+    },
 });

@@ -1,12 +1,12 @@
 -- 1. Projects Table
-CREATE TABLE public.projects (
+CREATE TABLE IF NOT EXISTS public.projects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 2. Daily Notes
-CREATE TABLE public.notes (
+CREATE TABLE IF NOT EXISTS public.notes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   category TEXT NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE public.notes (
 );
 
 -- 3. Chemicals
-CREATE TABLE public.chemicals_logs (
+CREATE TABLE IF NOT EXISTS public.chemicals_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   application_type TEXT CHECK (application_type IN ('wicking', 'spraying')),
@@ -25,7 +25,7 @@ CREATE TABLE public.chemicals_logs (
   logged_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE public.chemical_applications (
+CREATE TABLE IF NOT EXISTS public.chemical_applications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   chemical_log_id UUID REFERENCES public.chemicals_logs(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -34,7 +34,7 @@ CREATE TABLE public.chemical_applications (
 );
 
 -- 4. Metrics
-CREATE TABLE public.metrics (
+CREATE TABLE IF NOT EXISTS public.metrics (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   water_usage NUMERIC,
@@ -47,13 +47,13 @@ CREATE TABLE public.metrics (
 );
 
 -- 5. Safety Talks (Toolbox Talks)
-CREATE TABLE public.safety_talk_templates (
+CREATE TABLE IF NOT EXISTS public.safety_talk_templates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   description TEXT
 );
 
-CREATE TABLE public.safety_talks (
+CREATE TABLE IF NOT EXISTS public.safety_talks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   template_id UUID REFERENCES public.safety_talk_templates(id),
@@ -64,7 +64,7 @@ CREATE TABLE public.safety_talks (
 );
 
 -- 6. Checklist & Equipment
-CREATE TABLE public.equipment_logs (
+CREATE TABLE IF NOT EXISTS public.equipment_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   value TEXT,
@@ -74,7 +74,7 @@ CREATE TABLE public.equipment_logs (
   logged_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE public.equipment_checklists (
+CREATE TABLE IF NOT EXISTS public.equipment_checklists (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   form_data JSONB NOT NULL,
@@ -84,13 +84,13 @@ CREATE TABLE public.equipment_checklists (
 );
 
 -- 7. Surveys
-CREATE TABLE public.surveys (
+CREATE TABLE IF NOT EXISTS public.surveys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   logged_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE public.survey_questions (
+CREATE TABLE IF NOT EXISTS public.survey_questions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   survey_id UUID REFERENCES public.surveys(id) ON DELETE CASCADE,
   question TEXT NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE public.survey_questions (
 );
 
 -- 8. Observations
-CREATE TABLE public.observations (
+CREATE TABLE IF NOT EXISTS public.observations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- App uses existing UUID
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   category TEXT CHECK (category IN ('Negative', 'Positive')),
@@ -115,7 +115,7 @@ CREATE TABLE public.observations (
   logged_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE public.observation_assignees (
+CREATE TABLE IF NOT EXISTS public.observation_assignees (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   observation_id UUID REFERENCES public.observations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -123,7 +123,7 @@ CREATE TABLE public.observation_assignees (
 );
 
 -- 9. Incidents
-CREATE TABLE public.incidents (
+CREATE TABLE IF NOT EXISTS public.incidents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- App uses existing UUID
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
@@ -142,11 +142,26 @@ CREATE TABLE public.incidents (
 );
 
 -- 10. Daily Reports
-CREATE TABLE public.daily_signed_reports (
+CREATE TABLE IF NOT EXISTS public.daily_signed_reports (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
-  prepared_by TEXT NOT NULL,
-  signature_url TEXT NOT NULL,
-  signed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  report_date DATE NOT NULL,
+  prepared_by TEXT,
+  signature_url TEXT,
+  report_url TEXT,
+  unsigned_report_url TEXT,
+  is_signed BOOLEAN DEFAULT FALSE,
+  signed_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(project_id, report_date)
+);
+
+-- 11. General Attachments
+CREATE TABLE IF NOT EXISTS public.attachments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
+  notes TEXT,
+  file_names TEXT[] DEFAULT '{}',
+  cloudinary_urls TEXT[] DEFAULT '{}',
+  logged_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

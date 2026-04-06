@@ -58,7 +58,7 @@ export default function ReportsScreen() {
 
     return (
         <View style={styles.container}>
-            <ScreenHeader title="Signed Reports" subtitle={`${reports.length} total`} />
+            <ScreenHeader title="Daily Reports" subtitle={`${reports.length} total`} />
             <ScrollView
                 style={styles.scroll}
                 contentContainerStyle={styles.scrollContent}
@@ -80,18 +80,30 @@ export default function ReportsScreen() {
                             onPress={() => router.push(`/report/preview?date=${r.dateKey}`)}
                             activeOpacity={0.8}
                         >
-                            <View style={styles.reportIconWrap}>
-                                <Ionicons name="document-text" size={24} color={COLORS.success} />
+                            <View style={[styles.reportIconWrap, !r.entry.isSigned && styles.draftIconWrap]}>
+                                <Ionicons 
+                                    name={r.entry.isSigned ? "document-text" : "document-text-outline"} 
+                                    size={24} 
+                                    color={r.entry.isSigned ? COLORS.success : COLORS.subtitle} 
+                                />
                             </View>
                             <View style={styles.reportInfo}>
                                 <Text style={styles.reportDate}>{formatDate(r.dateKey)}</Text>
                                 <Text style={styles.reportProject}>{r.entry.projectName}</Text>
-                                <Text style={styles.reportSigner}>Signed by {r.entry.preparedBy}</Text>
+                                <Text style={styles.reportSigner}>
+                                    {r.entry.isSigned ? `Signed by ${r.entry.preparedBy}` : 'Draft Report'}
+                                </Text>
                             </View>
                             <View style={styles.reportMeta}>
-                                <View style={styles.signedBadge}>
-                                    <Ionicons name="checkmark-circle" size={12} color={COLORS.success} />
-                                    <Text style={styles.signedText}>Signed</Text>
+                                <View style={[styles.signedBadge, !r.entry.isSigned && styles.draftBadge]}>
+                                    <Ionicons 
+                                        name={r.entry.isSigned ? "checkmark-circle" : "time-outline"} 
+                                        size={12} 
+                                        color={r.entry.isSigned ? COLORS.success : COLORS.subtitle} 
+                                    />
+                                    <Text style={[styles.signedText, !r.entry.isSigned && styles.draftText]}>
+                                        {r.entry.isSigned ? 'Signed' : 'Draft'}
+                                    </Text>
                                 </View>
                                 <Ionicons name="chevron-forward" size={16} color={COLORS.subtitle} />
                             </View>
@@ -135,4 +147,7 @@ const styles = StyleSheet.create({
     reportMeta: { alignItems: 'flex-end', gap: 6 },
     signedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.success + '20', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
     signedText: { color: COLORS.success, fontSize: 11, fontWeight: '600' },
+    draftBadge: { backgroundColor: COLORS.subtitle + '20' },
+    draftText: { color: COLORS.subtitle },
+    draftIconWrap: { backgroundColor: COLORS.subtitle + '10' },
 });

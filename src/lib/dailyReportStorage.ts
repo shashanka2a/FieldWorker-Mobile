@@ -14,7 +14,8 @@ import {
     syncEquipmentChecklistToSupabase,
     syncObservationToSupabase,
     syncIncidentToSupabase,
-    syncSignedReportToSupabase
+    syncSignedReportToSupabase,
+    syncAttachmentToSupabase
 } from './supabaseSync';
 
 // --- Date Utilities ---
@@ -175,10 +176,14 @@ export interface EquipmentChecklistEntry {
 export type EquipmentOrChecklistEntry = EquipmentEntry | EquipmentChecklistEntry;
 
 export interface SignedReportEntry {
-    signedAt: string;
+    reportDate: string; // ISO date YYYY-MM-DD
+    signedAt?: string;
     preparedBy: string;
-    signatureDataUrl: string;
+    signatureDataUrl?: string;
     projectName: string;
+    reportUrl?: string;
+    unsignedReportUrl?: string;
+    isSigned: boolean;
 }
 
 // --- Storage Keys ---
@@ -263,6 +268,7 @@ export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promi
 export async function saveAttachments(dateKey: string, entry: AttachmentEntry): Promise<void> {
     if (entry.previews?.length) entry.previews = await uploadPhotosArray(entry.previews);
     await appendEntry(STORAGE_KEYS.attachments, dateKey, entry);
+    syncAttachmentToSupabase(entry).catch(console.error);
 }
 
 export async function saveEquipmentChecklist(
@@ -393,6 +399,20 @@ export async function saveSignedReport(
         await AsyncStorage.setItem(SIGNED_REPORT_DATE_KEYS, JSON.stringify(keys));
     }
 
+    syncSignedReportToSupabase(entry).catch(console.error);
+}
+
+export async function saveUnsignedReport(
+    dateKey: string,
+    entry: SignedReportEntry
+): Promise<void> {
+    await AsyncStorage.setItem(STORAGE_KEYS.signed(dateKey), JSON.stringify(entry));
+    const keys = await getSignedReportDateKeys();
+    if (!keys.includes(dateKey)) {
+        keys.push(dateKey);
+        keys.sort().reverse();
+        await AsyncStorage.setItem(SIGNED_REPORT_DATE_KEYS, JSON.stringify(keys));
+    }
     syncSignedReportToSupabase(entry).catch(console.error);
 }
 
