@@ -234,30 +234,30 @@ async function appendEntry<T>(
 export async function saveNotes(dateKey: string, entry: NoteEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.notes, dateKey, entry);
-    syncNoteToSupabase(entry).catch(console.error);
+    syncNoteToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveChemicals(dateKey: string, entry: ChemicalEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.chemicals, dateKey, entry);
-    syncChemicalsToSupabase(entry).catch(console.error);
+    syncChemicalsToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveMetrics(dateKey: string, entry: MetricsEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.metrics, dateKey, entry);
-    syncMetricsToSupabase(entry).catch(console.error);
+    syncMetricsToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveSurvey(dateKey: string, entry: SurveyEntry): Promise<void> {
     await appendEntry(STORAGE_KEYS.survey, dateKey, entry);
-    syncSurveyToSupabase(entry).catch(console.error);
+    syncSurveyToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveEquipment(dateKey: string, entry: EquipmentEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.equipment, dateKey, entry);
-    syncEquipmentToSupabase(entry).catch(console.error);
+    syncEquipmentToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promise<void> {
@@ -268,7 +268,7 @@ export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promi
 export async function saveAttachments(dateKey: string, entry: AttachmentEntry): Promise<void> {
     if (entry.previews?.length) entry.previews = await uploadPhotosArray(entry.previews);
     await appendEntry(STORAGE_KEYS.attachments, dateKey, entry);
-    syncAttachmentToSupabase(entry).catch(console.error);
+    syncAttachmentToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveEquipmentChecklist(
@@ -279,7 +279,7 @@ export async function saveEquipmentChecklist(
     if (entry.signature) entry.signature = (await uploadImageToCloudinary(entry.signature)) || undefined;
     
     await appendEntry(STORAGE_KEYS.equipment, dateKey, entry as unknown as EquipmentEntry);
-    syncEquipmentChecklistToSupabase(entry).catch(console.error);
+    syncEquipmentChecklistToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveObservation(dateKey: string, entry: ObservationEntry): Promise<void> {
@@ -287,7 +287,7 @@ export async function saveObservation(dateKey: string, entry: ObservationEntry):
     if (entry.attachments?.length) entry.attachments = await uploadPhotosArray(entry.attachments);
 
     await appendEntry(STORAGE_KEYS.observations, dateKey, entry);
-    syncObservationToSupabase(entry).catch(console.error);
+    syncObservationToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function updateObservation(dateKey: string, entry: ObservationEntry): Promise<void> {
@@ -304,7 +304,7 @@ export async function updateObservation(dateKey: string, entry: ObservationEntry
         arr.push(entry);
         await writeArray(key, arr);
     }
-    syncObservationToSupabase(entry).catch(console.error);
+    syncObservationToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function deleteObservation(dateKey: string, id: string): Promise<void> {
@@ -316,7 +316,7 @@ export async function deleteObservation(dateKey: string, id: string): Promise<vo
 export async function saveIncident(dateKey: string, entry: IncidentEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     await appendEntry(STORAGE_KEYS.incidents, dateKey, entry);
-    syncIncidentToSupabase(entry).catch(console.error);
+    syncIncidentToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function updateIncident(dateKey: string, entry: IncidentEntry): Promise<void> {
@@ -332,7 +332,7 @@ export async function updateIncident(dateKey: string, entry: IncidentEntry): Pro
         arr.push(entry);
         await writeArray(key, arr);
     }
-    syncIncidentToSupabase(entry).catch(console.error);
+    syncIncidentToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function deleteIncident(dateKey: string, id: string): Promise<void> {
@@ -443,6 +443,8 @@ export interface ReportData {
     dateKey: string;
     date: Date;
     projectName: string;
+    projectAddress?: string;
+    projectZipcode?: string;
     notes: NoteEntry[];
     chemicals: ChemicalEntry[];
     material: MaterialEntry[];
@@ -457,7 +459,9 @@ export interface ReportData {
 
 export async function getReportForDate(
     date: Date,
-    projectName: string = 'North Valley Solar Farm'
+    projectName: string = 'North Valley Solar Farm',
+    projectAddress?: string,
+    projectZipcode?: string,
 ): Promise<ReportData> {
     const dateKey = getDateKey(date);
     const [notes, chemicals, material, metrics, survey, equipment, attachments, observations, incidents, signed] =
@@ -478,6 +482,8 @@ export async function getReportForDate(
         dateKey,
         date,
         projectName,
+        projectAddress,
+        projectZipcode,
         notes,
         chemicals,
         material,

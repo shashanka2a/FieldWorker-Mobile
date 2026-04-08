@@ -69,10 +69,15 @@ export default function ReportPreviewScreen() {
 
     const loadReport = useCallback(async () => {
         setLoading(true);
-        const data = await getReportForDate(reportDate, selectedProject.name);
+        const data = await getReportForDate(
+            reportDate,
+            selectedProject.name,
+            selectedProject.address,
+            selectedProject.zipcode,
+        );
         setReport(data);
         setLoading(false);
-    }, [reportDate, selectedProject.name]);
+    }, [reportDate, selectedProject]);
 
     useEffect(() => { loadReport(); }, [loadReport]);
 
@@ -161,6 +166,11 @@ export default function ReportPreviewScreen() {
                         <View style={styles.reportMeta}>
                             <Text style={styles.reportMetaText}>Date: {dateLabel}</Text>
                             <Text style={styles.reportMetaText}>Project: {report?.projectName}</Text>
+                            {(report?.projectAddress || report?.projectZipcode) && (
+                                <Text style={styles.reportMetaText}>
+                                    {[report.projectAddress, report.projectZipcode].filter(Boolean).join(', ')}
+                                </Text>
+                            )}
                         </View>
                     </View>
 
@@ -210,7 +220,7 @@ export default function ReportPreviewScreen() {
 
                     {/* Chemicals */}
                     {report && report.chemicals.length > 0 && (
-                        <SectionBlock title="Chemicals Left on Truck">
+                        <SectionBlock title="Chemicals">
                             {report.chemicals.map((entry) => (
                                 <View key={entry.id}>
                                     <View style={{ paddingHorizontal: 16, paddingVertical: 6, backgroundColor: '#F8F8F8' }}>

@@ -71,7 +71,12 @@ export default function SignReportScreen() {
             const dateKey = getDateKey(reportDate);
             
             // Get existing report from storage to preserve links if any
-            const existingReportData = await getReportForDate(reportDate, selectedProject.name);
+            const existingReportData = await getReportForDate(
+                reportDate,
+                selectedProject.name,
+                selectedProject.address,
+                selectedProject.zipcode,
+            );
             const existingSignedInfo = existingReportData.signed;
             
             // Temporary signed report object for PDF generation
@@ -134,6 +139,18 @@ export default function SignReportScreen() {
                         <Text style={styles.infoLabel}>Project</Text>
                         <Text style={styles.infoValue}>{selectedProject.name}</Text>
                     </View>
+                    {(selectedProject.address || selectedProject.zipcode) && (
+                        <>
+                            <View style={styles.divider} />
+                            <View style={styles.infoRow}>
+                                <Ionicons name="location-outline" size={16} color={COLORS.subtitle} />
+                                <Text style={styles.infoLabel}>Address</Text>
+                                <Text style={styles.infoValue}>
+                                    {[selectedProject.address, selectedProject.zipcode].filter(Boolean).join(', ')}
+                                </Text>
+                            </View>
+                        </>
+                    )}
                 </View>
 
                 {/* Warning */}

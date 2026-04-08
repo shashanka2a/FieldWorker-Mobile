@@ -40,7 +40,7 @@ export async function getProjectId(projectName: string): Promise<string | null> 
     return null;
 }
 
-export async function syncNoteToSupabase(entry: NoteEntry) {
+export async function syncNoteToSupabase(dateKey: string, entry: NoteEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -49,11 +49,12 @@ export async function syncNoteToSupabase(entry: NoteEntry) {
         category: entry.category,
         notes_text: entry.notes,
         photos: await uploadPhotosArray(entry.photos),
-        logged_at: entry.timestamp
+        logged_at: entry.timestamp,
+        report_date: dateKey
     }]);
 }
 
-export async function syncChemicalsToSupabase(entry: ChemicalEntry) {
+export async function syncChemicalsToSupabase(dateKey: string, entry: ChemicalEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -64,7 +65,8 @@ export async function syncChemicalsToSupabase(entry: ChemicalEntry) {
             application_type: entry.applicationType,
             notes: entry.notes || '',
             photos: await uploadPhotosArray(entry.photos),
-            logged_at: entry.timestamp
+            logged_at: entry.timestamp,
+            report_date: dateKey
         }])
         .select('id')
         .single();
@@ -80,7 +82,7 @@ export async function syncChemicalsToSupabase(entry: ChemicalEntry) {
     }
 }
 
-export async function syncMetricsToSupabase(entry: MetricsEntry) {
+export async function syncMetricsToSupabase(dateKey: string, entry: MetricsEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -92,11 +94,12 @@ export async function syncMetricsToSupabase(entry: MetricsEntry) {
         number_of_operators: Number(entry.numberOfOperators) || null,
         notes: entry.notes || '',
         photos: await uploadPhotosArray(entry.photos),
-        logged_at: entry.timestamp
+        logged_at: entry.timestamp,
+        report_date: dateKey
     }]);
 }
 
-export async function syncSurveyToSupabase(entry: SurveyEntry) {
+export async function syncSurveyToSupabase(dateKey: string, entry: SurveyEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -104,7 +107,8 @@ export async function syncSurveyToSupabase(entry: SurveyEntry) {
         .from('surveys')
         .insert([{
             project_id: projectId,
-            logged_at: entry.timestamp
+            logged_at: entry.timestamp,
+            report_date: dateKey
         }])
         .select('id')
         .single();
@@ -120,7 +124,7 @@ export async function syncSurveyToSupabase(entry: SurveyEntry) {
     }
 }
 
-export async function syncEquipmentToSupabase(entry: EquipmentEntry) {
+export async function syncEquipmentToSupabase(dateKey: string, entry: EquipmentEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -130,11 +134,12 @@ export async function syncEquipmentToSupabase(entry: EquipmentEntry) {
         unit: entry.unit || '',
         notes: entry.notes || '',
         photos: await uploadPhotosArray(entry.photos),
-        logged_at: entry.timestamp
+        logged_at: entry.timestamp,
+        report_date: dateKey
     }]);
 }
 
-export async function syncEquipmentChecklistToSupabase(entry: EquipmentChecklistEntry) {
+export async function syncEquipmentChecklistToSupabase(dateKey: string, entry: EquipmentChecklistEntry) {
     // Requires the checklist to have project info nested within formData or extended structure 
     // Usually dailyReportStorage passes the entry but the project might be extracted from formData
     const projectName = entry.formData?.siteName || 'Unknown Site';
@@ -146,11 +151,12 @@ export async function syncEquipmentChecklistToSupabase(entry: EquipmentChecklist
         form_data: entry.formData || {},
         signature_url: entry.signature ? await uploadImageToCloudinary(entry.signature) : null,
         photos: await uploadPhotosArray(entry.photos),
-        logged_at: entry.timestamp
+        logged_at: entry.timestamp,
+        report_date: dateKey
     }]);
 }
 
-export async function syncObservationToSupabase(entry: ObservationEntry) {
+export async function syncObservationToSupabase(dateKey: string, entry: ObservationEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -170,7 +176,8 @@ export async function syncObservationToSupabase(entry: ObservationEntry) {
             resolution_photos: await uploadPhotosArray(entry.resolutionPhotos),
             attachments: await uploadPhotosArray(entry.attachments),
             team_notifications: entry.teamNotifications || [],
-            logged_at: entry.timestamp
+            logged_at: entry.timestamp,
+            report_date: dateKey
         }], { onConflict: 'id' })
         .select('id')
         .single();
@@ -188,7 +195,7 @@ export async function syncObservationToSupabase(entry: ObservationEntry) {
     }
 }
 
-export async function syncIncidentToSupabase(entry: IncidentEntry) {
+export async function syncIncidentToSupabase(dateKey: string, entry: IncidentEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -209,7 +216,8 @@ export async function syncIncidentToSupabase(entry: IncidentEntry) {
             incident_outcome: entry.incidentOutcome || [],
             description: entry.description || '',
             photos: await uploadPhotosArray(entry.photos),
-            logged_at: entry.timestamp
+            logged_at: entry.timestamp,
+            report_date: dateKey
         }], { onConflict: 'id' });
 }
 
@@ -247,7 +255,7 @@ export async function syncSignedReportToSupabase(entry: SignedReportEntry) {
     }], { onConflict: 'project_id,report_date' });
 }
 
-export async function syncAttachmentToSupabase(entry: AttachmentEntry) {
+export async function syncAttachmentToSupabase(dateKey: string, entry: AttachmentEntry) {
     const projectId = await getProjectId(entry.project.name);
     if (!projectId) return;
 
@@ -256,6 +264,7 @@ export async function syncAttachmentToSupabase(entry: AttachmentEntry) {
         notes: entry.notes || '',
         file_names: entry.fileNames || [],
         cloudinary_urls: entry.previews || [],
-        logged_at: entry.timestamp
+        logged_at: entry.timestamp,
+        report_date: dateKey
     }]);
 }

@@ -6,6 +6,8 @@ import { supabase } from '@/lib/supabase';
 interface Project {
     id: string;
     name: string;
+    address?: string;
+    zipcode?: string;
 }
 
 interface AppContextType {
@@ -39,7 +41,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         try {
             const { data, error } = await supabase
                 .from('projects')
-                .select('id, name')
+                .select('id, name, address, zipcode')
                 .order('name', { ascending: true });
 
             if (error) throw error;

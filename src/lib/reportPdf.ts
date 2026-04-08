@@ -53,7 +53,7 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
     <div class="header">
         <h1>Daily Field Report</h1>
         <div class="project-name">${report.projectName}</div>
-        <div class="project-address">Address: ${(report as any).projectAddress || 'On-Site'}</div>
+        <div class="project-address">Address: ${[report.projectAddress, report.projectZipcode].filter(Boolean).join(', ') || 'On-Site'}</div>
         <div class="field-worker">Field Worker: <span>${fieldWorker}</span></div>
         <p>FieldWorker Management System</p>
     </div>
