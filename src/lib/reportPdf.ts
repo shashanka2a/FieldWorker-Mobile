@@ -6,6 +6,7 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
     const dateLabel = report.date.toLocaleDateString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
     });
+    const fieldWorker = report.signed?.preparedBy || 'Field Worker';
 
     const html = `
 <!DOCTYPE html>
@@ -14,10 +15,14 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
     <style>
         body { font-family: 'Helvetica', sans-serif; padding: 20px; color: #333; }
-        .header { background-color: #FF6633; padding: 20px; text-align: center; color: white; border-radius: 8px 8px 0 0; }
-        .header h1 { margin: 0; font-size: 24px; }
-        .header p { margin: 5px 0 0; font-size: 14px; opacity: 0.9; }
-        .meta { padding: 15px; background: #f9f9f9; border-bottom: 2px solid #eee; display: flex; justify-content: space-between; font-size: 13px; }
+        .header { background-color: #FF6633; padding: 24px 20px 20px; text-align: center; color: white; border-radius: 8px 8px 0 0; }
+        .header h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: 0.5px; }
+        .header .project-name { font-size: 18px; font-weight: bold; margin: 4px 0 2px; background: rgba(255,255,255,0.15); display: inline-block; padding: 4px 16px; border-radius: 20px; }
+        .header .project-address { font-size: 13px; opacity: 0.85; margin: 2px 0; }
+        .header .field-worker { font-size: 13px; opacity: 0.9; margin-top: 6px; }
+        .header .field-worker span { background: rgba(255,255,255,0.25); padding: 2px 10px; border-radius: 12px; font-weight: bold; }
+        .header p { margin: 5px 0 0; font-size: 13px; opacity: 0.75; }
+        .meta { padding: 12px 15px; background: #f9f9f9; border-bottom: 2px solid #eee; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
         .section { margin-top: 20px; border-bottom: 1px solid #eee; padding-bottom: 15px; }
         .section-title { font-size: 12px; font-weight: bold; text-transform: uppercase; color: #666; background: #f4f4f4; padding: 8px 12px; margin: 0 -20px 10px; }
         .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
@@ -47,12 +52,15 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
 <body>
     <div class="header">
         <h1>Daily Field Report</h1>
+        <div class="project-name">${report.projectName}</div>
+        <div class="project-address">Address: ${(report as any).projectAddress || 'On-Site'}</div>
+        <div class="field-worker">Field Worker: <span>${fieldWorker}</span></div>
         <p>FieldWorker Management System</p>
     </div>
     
     <div class="meta">
         <div><strong>Date:</strong> ${dateLabel}</div>
-        <div><strong>Project:</strong> ${report.projectName}</div>
+        <div><strong>Report Status:</strong> ${isSigned ? '✅ Signed' : '⏳ Draft'}</div>
     </div>
 
     ${report.notes.length > 0 ? `
@@ -79,6 +87,7 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
         ${report.metrics.map(m => `
             <div class="row"><span class="row-label">Water Usage</span><span class="row-value">${m.waterUsage || '—'} GAL</span></div>
             <div class="row"><span class="row-label">Acres Completed</span><span class="row-value">${m.acresCompleted || '—'} acres</span></div>
+            <div class="row"><span class="row-label">Green Space Completed</span><span class="row-value">${m.greenSpaceCompleted || '—'} sq ft</span></div>
             <div class="row"><span class="row-label">Operators</span><span class="row-value">${m.numberOfOperators || '—'}</span></div>
             ${m.notes ? `<div class="row"><span class="row-label">Notes</span><span class="row-value">${m.notes}</span></div>` : ''}
             ${m.photos && m.photos.length > 0 ? `
@@ -92,7 +101,7 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
 
     ${report.chemicals.length > 0 ? `
     <div class="section">
-        <div class="section-title">Chemicals Left on Truck</div>
+        <div class="section-title">Chemicals</div>
         ${report.chemicals.map(entry => `
             <div style="font-size: 11px; background: #eee; padding: 2px 10px; margin: 10px 0 5px;">Method: ${entry.applicationType}</div>
             ${entry.chemicals.map(chem => `
@@ -183,13 +192,18 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
 
     ${report.attachments.length > 0 ? `
     <div class="section">
-        <div class="section-title">General Attachments</div>
+        <div class="section-title">Attachments</div>
         ${report.attachments.map(att => `
             <div class="note-entry">
                 ${att.notes ? `<div class="note-text">${att.notes}</div>` : ''}
+                ${att.fileNames && att.fileNames.length > 0 ? `
+                <div style="margin: 6px 0; font-size: 12px; color: #555;">
+                    ${att.fileNames.map(f => `<span style="display: inline-block; background: #f0f0f0; border-radius: 4px; padding: 2px 8px; margin: 2px 4px 2px 0;">${f}</span>`).join('')}
+                </div>` : ''}
+                ${att.previews && att.previews.length > 0 ? `
                 <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;">
-                    ${att.previews?.map(p => `<img src="${p}" style="width: 120px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #eee;" />`).join('')}
-                </div>
+                    ${att.previews.map(p => `<img src="${p}" style="width: 120px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #eee;" />`).join('')}
+                </div>` : ''}
                 <div class="note-time">${new Date(att.timestamp).toLocaleString()}</div>
             </div>
         `).join('')}
