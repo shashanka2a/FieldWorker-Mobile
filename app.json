@@ -18,8 +18,10 @@
       "infoPlist": {
         "NSCameraUsageDescription": "FieldWorker needs camera access to capture site photos and signatures.",
         "NSPhotoLibraryUsageDescription": "FieldWorker needs photo library access to attach site photos.",
-        "NSPhotoLibraryAddUsageDescription": "FieldWorker needs permission to save photos to your library."
-      }
+        "NSPhotoLibraryAddUsageDescription": "FieldWorker needs permission to save photos to your library.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.shashankj02.fieldworkermobile"
     },
     "android": {
       "adaptiveIcon": {
@@ -28,9 +30,10 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -56,6 +59,12 @@
     ],
     "experiments": {
       "typedRoutes": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f39e81fc-3f4c-4c8d-ae41-cfaac78e5c03"
+      }
     }
   }
 }
