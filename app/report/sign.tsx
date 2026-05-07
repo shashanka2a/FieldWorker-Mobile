@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     View,
     Text,
@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '@/context/AppContext';
-import { saveSignedReport, getDateKey, getReportForDate } from '@/lib/dailyReportStorage';
+import { saveSignedReport, getDateKey, getReportForDate, parseDateKeyLocal } from '@/lib/dailyReportStorage';
 import { generateReportPdf } from '@/lib/reportPdf';
 
 const COLORS = {
@@ -27,7 +27,7 @@ const COLORS = {
 };
 
 export default function SignReportScreen() {
-    const { selectedDate, selectedProject, currentUser } = useAppContext();
+    const { selectedDate, setSelectedDate, selectedProject, currentUser } = useAppContext();
     const { date: dateParam } = useLocalSearchParams<{ date?: string }>();
     const insets = useSafeAreaInsets();
     const sigRef = useRef<any>(null);
@@ -38,11 +38,13 @@ export default function SignReportScreen() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
 
-    const reportDate = dateParam
-        ? (() => { const [y, m, d] = dateParam.split('-').map(Number); return new Date(y, m - 1, d); })()
-        : selectedDate;
+    useEffect(() => {
+        if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return;
+        if (dateParam === getDateKey(selectedDate)) return;
+        void setSelectedDate(parseDateKeyLocal(dateParam));
+    }, [dateParam, selectedDate, setSelectedDate]);
 
-    const dateLabel = reportDate.toLocaleDateString('en-US', {
+    const dateLabel = selectedDate.toLocaleDateString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
     });
 
@@ -57,6 +59,11 @@ export default function SignReportScreen() {
         setSigCaptured(false);
     };
 
+    /** Capture signature after each stroke so users don't have to tap WebView "Confirm" (easy to miss). */
+    const handleSignatureEnd = useCallback(() => {
+        sigRef.current?.readSignature();
+    }, []);
+
     const handleSubmit = async () => {
         if (!name.trim()) {
             Alert.alert('Required', 'Please enter the preparer\'s full name.');
@@ -68,11 +75,11 @@ export default function SignReportScreen() {
         }
         setSaving(true);
         try {
-            const dateKey = getDateKey(reportDate);
-            
+            const dateKey = getDateKey(selectedDate);
+
             // Get existing report from storage to preserve links if any
             const existingReportData = await getReportForDate(
-                reportDate,
+                selectedDate,
                 selectedProject.name,
                 selectedProject.address,
                 selectedProject.zipcode,
@@ -124,7 +131,11 @@ export default function SignReportScreen() {
                 <View style={{ minWidth: 72 }} />
             </View>
 
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <ScrollView
+                style={styles.scroll}
+                contentContainerStyle={styles.scrollContent}
+                keyboardShouldPersistTaps="handled"
+            >
 
                 {/* Report Info Card */}
                 <View style={styles.infoCard}>
@@ -178,30 +189,43 @@ export default function SignReportScreen() {
                 <View style={styles.field}>
                     <View style={styles.sigHeader}>
                         <Text style={styles.label}>Signature <Text style={styles.req}>*</Text></Text>
-                        {sigCaptured && (
-                            <TouchableOpacity onPress={clearSignature} style={styles.clearSigBtn}>
-                                <Ionicons name="refresh" size={14} color={COLORS.subtitle} />
-                                <Text style={styles.clearSigText}>Clear</Text>
-                            </TouchableOpacity>
-                        )}
+                        <TouchableOpacity
+                            onPress={clearSignature}
+                            style={[styles.clearSigBtn, !sigCaptured && { opacity: 0.6 }]}
+                        >
+                            <Ionicons name="refresh" size={14} color={COLORS.subtitle} />
+                            <Text style={styles.clearSigText}>Clear</Text>
+                        </TouchableOpacity>
                     </View>
                     <View style={[styles.canvasWrap, sigCaptured && styles.canvasCaptured]}>
                         <SignatureCanvas
                             ref={sigRef}
                             onOK={handleSignatureOK}
-                            onEmpty={() => { }}
-                            descriptionText="Draw your signature here"
+                            onEmpty={() => {
+                                setSignatureData('');
+                                setSigCaptured(false);
+                            }}
+                            onClear={() => {
+                                setSignatureData('');
+                                setSigCaptured(false);
+                            }}
+                            onEnd={handleSignatureEnd}
+                            minDistance={2}
+                            descriptionText="Draw your signature here (lift your finger to capture, or tap Confirm below)"
                             clearText="Clear"
                             confirmText={sigCaptured ? '✓ Captured' : 'Confirm Signature'}
+                            backgroundColor="#FFFFFF"
+                            penColor="#111111"
+                            dataURL={signatureData}
                             webStyle={`
-                body { background: #2C2C2E; margin: 0; padding: 0; }
+                body { background: #FFFFFF; margin: 0; padding: 0; }
                 .m-signature-pad { box-shadow: none; margin: 0; }
-                .m-signature-pad--body { background: #2C2C2E; border: none; }
-                .m-signature-pad--body canvas { border-radius: 12px; background: #2C2C2E; }
-                .m-signature-pad--footer { padding: 10px 16px; background: #2C2C2E; }
-                .m-signature-pad--footer .description { color: #98989D; font-size: 13px; }
+                .m-signature-pad--body { background: #FFFFFF; border: none; }
+                .m-signature-pad--body canvas { border-radius: 12px; background: #FFFFFF; }
+                .m-signature-pad--footer { padding: 10px 16px; background: #FFFFFF; }
+                .m-signature-pad--footer .description { color: #6B7280; font-size: 13px; }
                 .button { border-radius: 12px; padding: 10px 20px; font-weight: 700; font-size: 14px; }
-                .button.clear { background: #3A3A3C; color: #fff; }
+                .button.clear { background: #E5E7EB; color: #111827; }
                 .button.save { background: #FF6633; color: #fff; }
               `}
                             style={{ flex: 1 }}
@@ -215,7 +239,10 @@ export default function SignReportScreen() {
                     )}
                 </View>
 
-                {/* Submit */}
+            </ScrollView>
+
+            {/* Sticky footer submit (so it never “disappears” offscreen) */}
+            <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
                 <TouchableOpacity
                     style={[styles.submitBtn, (saving || saved || !sigCaptured || !name.trim()) && { opacity: 0.6 }]}
                     onPress={handleSubmit}
@@ -228,7 +255,7 @@ export default function SignReportScreen() {
                             <><Ionicons name="pencil" size={20} color="#fff" /><Text style={styles.submitText}>Submit & Sign Report</Text></>
                         )}
                 </TouchableOpacity>
-            </ScrollView>
+            </View>
         </View>
     );
 }
@@ -240,7 +267,7 @@ const styles = StyleSheet.create({
     backText: { color: '#fff', fontSize: 15, fontWeight: '500' },
     headerTitle: { flex: 1, textAlign: 'center', color: '#fff', fontSize: 16, fontWeight: '700' },
     scroll: { flex: 1 },
-    scrollContent: { padding: 16, paddingBottom: 48, gap: 16 },
+    scrollContent: { padding: 16, paddingBottom: 120, gap: 16 },
     infoCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 14, gap: 0, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     infoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
     infoLabel: { color: COLORS.subtitle, fontSize: 13, flex: 1 },
@@ -255,10 +282,11 @@ const styles = StyleSheet.create({
     sigHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     clearSigBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     clearSigText: { color: COLORS.subtitle, fontSize: 13 },
-    canvasWrap: { height: 280, borderRadius: 14, overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, backgroundColor: COLORS.card },
+    canvasWrap: { height: 280, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#FFFFFF', backgroundColor: '#FFFFFF' },
     canvasCaptured: { borderColor: COLORS.success },
     sigConfirmed: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     sigConfirmedText: { color: COLORS.success, fontSize: 13, fontWeight: '600' },
+    footer: { paddingHorizontal: 16, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border, backgroundColor: COLORS.surface },
     submitBtn: { backgroundColor: COLORS.brand, borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8, shadowColor: COLORS.brand, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 6 },
     submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

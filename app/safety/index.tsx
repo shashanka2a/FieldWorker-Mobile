@@ -10,7 +10,7 @@ import {
     Modal,
     Pressable,
 } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { getSafetyTalks, SafetyTalk, SafetyTalkStatus } from '@/lib/safetyStorage';
@@ -42,6 +42,7 @@ function formatDate(dateStr: string): string {
 }
 
 export default function SafetyListScreen() {
+    const { tab } = useLocalSearchParams<{ tab?: string }>();
     const [activeTab, setActiveTab] = useState<TabType>('upcoming');
     const [talks, setTalks] = useState<SafetyTalk[]>([]);
     const [search, setSearch] = useState('');
@@ -52,6 +53,12 @@ export default function SafetyListScreen() {
         const data = await getSafetyTalks();
         setTalks(data);
     }, []);
+
+    useEffect(() => {
+        if (tab === 'conducted' || tab === 'upcoming' || tab === 'missed') {
+            setActiveTab(tab);
+        }
+    }, [tab]);
 
     // Reload talks on every focus (handles back navigation)
     useFocusEffect(

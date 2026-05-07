@@ -19,7 +19,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '@/context/AppContext';
 import {
+    createUuid,
     getDateKey,
+    getTimestampForReportingDay,
     saveIncident,
     updateIncident,
     getIncidentsForDate,
@@ -92,6 +94,11 @@ export default function AddIncidentScreen() {
     // Temp text for adding items
     const [tempText, setTempText] = useState('');
     const [activeSheet, setActiveSheet] = useState<'employee' | 'investigation' | 'outcome' | null>(null);
+    const [existingEntryTimestamp, setExistingEntryTimestamp] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!editId) setExistingEntryTimestamp(null);
+    }, [editId]);
 
     // Load existing incident
     useEffect(() => {
@@ -101,6 +108,7 @@ export default function AddIncidentScreen() {
                 const all = await getIncidentsForDate(dateKey);
                 const existing = all.find((o) => o.id === editId);
                 if (existing) {
+                    setExistingEntryTimestamp(existing.timestamp);
                     setTitle(existing.title);
                     setStatus(existing.status);
                     setRecordable(existing.recordable);
@@ -143,9 +151,9 @@ export default function AddIncidentScreen() {
         try {
             const dateKey = getDateKey(selectedDate);
             const entry: IncidentEntry = {
-                id: editId ?? Date.now().toString(),
+                id: editId ?? createUuid(),
                 project: selectedProject,
-                timestamp: new Date().toISOString(),
+                timestamp: existingEntryTimestamp ?? getTimestampForReportingDay(selectedDate),
                 title: title.trim(),
                 status,
                 recordable,

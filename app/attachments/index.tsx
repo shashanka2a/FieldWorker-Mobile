@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -7,12 +7,15 @@ import {
     StyleSheet,
     RefreshControl,
     Image,
+    Modal,
+    Dimensions,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
 import { getDateKey, getAttachmentsForDate, AttachmentEntry } from '@/lib/dailyReportStorage';
+import { fetchAttachmentsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -22,18 +25,124 @@ const COLORS = {
     subtitle: '#98989D',
 };
 
+const WIN = Dimensions.get('window');
+
+function normalizeProjectName(name: string | undefined): string {
+    return (name ?? '').trim().toLowerCase();
+}
+
+/** Exact match on filenames + notes + day (when names align across local/remote). */
+function attachmentLogicalKey(e: AttachmentEntry): string {
+    const dayKey = getDateKey(new Date(e.timestamp));
+    const names = [...(e.fileNames ?? [])]
+        .map((n) => n.trim())
+        .filter(Boolean)
+        .sort()
+        .join('|');
+    const notes = (e.notes ?? '').trim();
+    return `${normalizeProjectName(e.project?.name)}\x01${dayKey}\x01${names}\x01${notes}`;
+}
+
+/** Same image often differs by http/https or casing — compare paths only. */
+function normalizeComparableUploadUrl(p: string): string {
+    let s = p.trim().split('?')[0].trim().toLowerCase();
+    s = s.replace(/^https?:\/\//, '');
+    return s;
+}
+
+/**
+ * 4-hour block within the local calendar day — aligns local `timestamp` vs Supabase `logged_at` even when
+ * they skew by an hour or more.
+ */
+function attachmentSlotKey(e: AttachmentEntry): string {
+    const d = new Date(e.timestamp);
+    const dayKey = getDateKey(d);
+    const minutesFromMidnight = d.getHours() * 60 + d.getMinutes();
+    const block = Math.floor(minutesFromMidnight / 240);
+    const count = Math.max((e.fileNames ?? []).length, (e.previews ?? []).length, 1);
+    const notes = (e.notes ?? '').trim();
+    return `${normalizeProjectName(e.project?.name)}\x01${dayKey}\x01${block}\x01${count}\x01${notes}`;
+}
+
+function allStableCloudinaryUrls(e: AttachmentEntry): string[] {
+    return [
+        ...new Set(
+            (e.previews ?? [])
+                .filter((p): p is string => typeof p === 'string' && /cloudinary/i.test(p))
+                .map((p) => normalizeComparableUploadUrl(p))
+        ),
+    ].sort();
+}
+
+function hasCloudinaryPreview(e: AttachmentEntry): boolean {
+    return allStableCloudinaryUrls(e).length > 0;
+}
+
+/** Collapse duplicate rows in one list (e.g. repeated Cloudinary URLs from double-insert). */
+function dedupeAttachmentRows(list: AttachmentEntry[]): AttachmentEntry[] {
+    const sorted = [...list].sort((a, b) => {
+        const ac = hasCloudinaryPreview(a) ? 1 : 0;
+        const bc = hasCloudinaryPreview(b) ? 1 : 0;
+        if (ac !== bc) return bc - ac;
+        return +new Date(b.timestamp) - +new Date(a.timestamp);
+    });
+    const seenUrl = new Set<string>();
+    const seenStrict = new Set<string>();
+    const seenSlot = new Set<string>();
+    const out: AttachmentEntry[] = [];
+
+    for (const e of sorted) {
+        const urls = allStableCloudinaryUrls(e);
+        if (urls.length > 0) {
+            if (urls.some((u) => seenUrl.has(u))) continue;
+            urls.forEach((u) => seenUrl.add(u));
+            seenSlot.add(attachmentSlotKey(e));
+            seenStrict.add(attachmentLogicalKey(e));
+            out.push(e);
+            continue;
+        }
+
+        if (seenSlot.has(attachmentSlotKey(e))) continue;
+
+        const strict = attachmentLogicalKey(e);
+        if (seenStrict.has(strict)) continue;
+
+        seenSlot.add(attachmentSlotKey(e));
+        seenStrict.add(strict);
+        out.push(e);
+    }
+
+    return out.sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp));
+}
+
 export default function AttachmentsScreen() {
-    const { selectedDate } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
     const [entries, setEntries] = useState<AttachmentEntry[]>([]);
     const [refreshing, setRefreshing] = useState(false);
+    const [previewUri, setPreviewUri] = useState<string | null>(null);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
     const loadData = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const data = await getAttachmentsForDate(dateKey);
-        setEntries(data.reverse());
-    }, [selectedDate]);
+        const [localData, remoteData] = await Promise.all([
+            getAttachmentsForDate(dateKey),
+            fetchAttachmentsFromSupabase(
+                dateKey,
+                selectedDate,
+                selectedProject?.id ?? '',
+                selectedProject?.name ?? ''
+            ),
+        ]);
+        const matchProject = (d: AttachmentEntry) =>
+            normalizeProjectName(d.project?.name) === normalizeProjectName(selectedProject?.name);
+        const localFiltered = localData.filter(matchProject);
+        const remoteFiltered = remoteData.filter(matchProject);
+
+        // Single source: no merge. Prefer Supabase when it returns anything for this day/project; else device queue only.
+        const rows = remoteFiltered.length > 0 ? remoteFiltered : localFiltered;
+        setEntries(dedupeAttachmentRows(rows));
+    }, [selectedDate, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
@@ -76,21 +185,28 @@ export default function AttachmentsScreen() {
                                 </View>
                             </View>
                             {entry.notes && <Text style={styles.cardNotes}>{entry.notes}</Text>}
-                            {entry.previews && entry.previews.length > 0 && (
+                            {entry.previews && entry.previews.length > 0 ? (
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                                     {entry.previews.map((uri, i) => (
-                                        <Image key={i} source={{ uri }} style={styles.preview} />
+                                        <TouchableOpacity
+                                            key={`${entry.id}-${i}`}
+                                            activeOpacity={0.85}
+                                            onPress={() => setPreviewUri(uri)}
+                                        >
+                                            <Image source={{ uri }} style={styles.preview} />
+                                        </TouchableOpacity>
                                     ))}
                                 </ScrollView>
+                            ) : (
+                                <View style={styles.fileList}>
+                                    {entry.fileNames.map((name, i) => (
+                                        <View key={i} style={styles.fileRow}>
+                                            <Ionicons name="document-outline" size={14} color={COLORS.subtitle} />
+                                            <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
+                                        </View>
+                                    ))}
+                                </View>
                             )}
-                            <View style={styles.fileList}>
-                                {entry.fileNames.map((name, i) => (
-                                    <View key={i} style={styles.fileRow}>
-                                        <Ionicons name="document-outline" size={14} color={COLORS.subtitle} />
-                                        <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
-                                    </View>
-                                ))}
-                            </View>
                         </View>
                     ))
                 )}
@@ -104,6 +220,25 @@ export default function AttachmentsScreen() {
             >
                 <Ionicons name="add" size={28} color="#fff" />
             </TouchableOpacity>
+
+            <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri(null)}>
+                <View style={styles.lightboxBackdrop}>
+                    <TouchableOpacity
+                        style={styles.lightboxClose}
+                        onPress={() => setPreviewUri(null)}
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    >
+                        <Ionicons name="close-circle" size={36} color="#fff" />
+                    </TouchableOpacity>
+                    {previewUri ? (
+                        <Image
+                            source={{ uri: previewUri }}
+                            style={styles.lightboxImage}
+                            resizeMode="contain"
+                        />
+                    ) : null}
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -126,6 +261,23 @@ const styles = StyleSheet.create({
     cardTime: { color: COLORS.subtitle, fontSize: 12 },
     cardNotes: { color: COLORS.subtitle, fontSize: 13, lineHeight: 18 },
     preview: { width: 80, height: 80, borderRadius: 10 },
+    lightboxBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.94)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+    },
+    lightboxClose: {
+        position: 'absolute',
+        top: 52,
+        right: 16,
+        zIndex: 10,
+    },
+    lightboxImage: {
+        width: WIN.width - 24,
+        height: WIN.height * 0.82,
+    },
     fileList: { gap: 4 },
     fileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     fileName: { color: COLORS.subtitle, fontSize: 13, flex: 1 },

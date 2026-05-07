@@ -18,7 +18,8 @@ import {
     deleteScheduledSafetyTalk,
     SafetyTalk,
 } from '@/lib/safetyStorage';
-import { getTemplateById, SAFETY_TEMPLATES } from '@/lib/safetyTemplates';
+import { getTemplateById, SAFETY_TEMPLATES, type SafetyTemplate } from '@/lib/safetyTemplates';
+import { fetchSafetyTalkTemplatesFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -46,6 +47,8 @@ export default function SafetyScheduleScreen() {
     const [selectedTemplateId, setSelectedTemplateId] = useState<string>(paramTemplateId ?? '');
     const [loading, setLoading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+    const [templates, setTemplates] = useState<SafetyTemplate[]>([]);
+    const [templatesLoading, setTemplatesLoading] = useState(true);
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -67,6 +70,21 @@ export default function SafetyScheduleScreen() {
         }
     }, [id]);
 
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            try {
+                const remote = await fetchSafetyTalkTemplatesFromSupabase();
+                if (mounted) setTemplates(remote);
+            } finally {
+                if (mounted) setTemplatesLoading(false);
+            }
+        })();
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
     // Build a 30-day date option list
     const dateOptions: Date[] = [];
     for (let i = 0; i < 30; i++) {
@@ -75,7 +93,8 @@ export default function SafetyScheduleScreen() {
         dateOptions.push(d);
     }
 
-    const selectedTemplate = getTemplateById(selectedTemplateId);
+    const selectedTemplate = (templates.length ? templates.find((t) => t.id === selectedTemplateId) : undefined) ?? getTemplateById(selectedTemplateId);
+    const templateList = templates.length > 0 ? templates : SAFETY_TEMPLATES;
 
     const handleSave = async () => {
         if (!selectedTemplateId) {
@@ -145,7 +164,12 @@ export default function SafetyScheduleScreen() {
                 {/* Template selection */}
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Template</Text>
-                    {SAFETY_TEMPLATES.map((template) => (
+                    {templatesLoading && templates.length === 0 ? (
+                        <View style={{ paddingVertical: 12 }}>
+                            <ActivityIndicator color={COLORS.brand} />
+                        </View>
+                    ) : null}
+                    {templateList.map((template) => (
                         <TouchableOpacity
                             key={template.id}
                             style={[styles.templateOption, selectedTemplateId === template.id && styles.templateOptionActive]}

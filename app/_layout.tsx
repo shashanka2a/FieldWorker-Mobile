@@ -4,12 +4,14 @@ import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from '@/context/AppContext';
+import { FieldPhotoWatermarkProvider } from '@/components/FieldPhotoWatermarkProvider';
 
 export default function RootLayout() {
     return (
         <GestureHandlerRootView style={{ flex: 1 }}>
             <SafeAreaProvider>
                 <AppProvider>
+                    <FieldPhotoWatermarkProvider>
                     <StatusBar style="light" backgroundColor="#1C1C1E" />
                     <Stack
                         screenOptions={{
@@ -45,6 +47,7 @@ export default function RootLayout() {
                         <Stack.Screen name="projects/index" options={{ headerShown: false, animation: 'slide_from_right' }} />
                         <Stack.Screen name="settings/index" options={{ headerShown: false, animation: 'slide_from_right' }} />
                     </Stack>
+                    </FieldPhotoWatermarkProvider>
                 </AppProvider>
             </SafeAreaProvider>
         </GestureHandlerRootView>

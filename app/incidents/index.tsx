@@ -19,6 +19,7 @@ import {
     deleteIncident,
     IncidentEntry,
 } from '@/lib/dailyReportStorage';
+import { fetchIncidentsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -34,7 +35,7 @@ const COLORS = {
 };
 
 export default function IncidentsListScreen() {
-    const { selectedDate } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
     const [incidents, setIncidents] = useState<IncidentEntry[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -42,9 +43,16 @@ export default function IncidentsListScreen() {
 
     const loadIncidents = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const data = await getIncidentsForDate(dateKey);
+        const localData = await getIncidentsForDate(dateKey);
+        const remoteData = await fetchIncidentsFromSupabase(
+            dateKey,
+            selectedDate,
+            selectedProject?.id ?? '',
+            selectedProject?.name ?? ''
+        );
+        const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
         setIncidents(data.reverse());
-    }, [selectedDate]);
+    }, [selectedDate, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadIncidents(); }, [loadIncidents]));
 

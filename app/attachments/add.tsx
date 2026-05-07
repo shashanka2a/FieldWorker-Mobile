@@ -9,13 +9,16 @@ import {
     Alert,
     ActivityIndicator,
     Image,
+    Modal,
+    Dimensions,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveAttachments } from '@/lib/dailyReportStorage';
+import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
+import { createUuid, getDateKey, getTimestampForReportingDay, saveAttachments } from '@/lib/dailyReportStorage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -26,6 +29,8 @@ const COLORS = {
     danger: '#FF453A',
 };
 
+const WIN = Dimensions.get('window');
+
 interface PickedFile {
     uri: string;
     name: string;
@@ -34,10 +39,12 @@ interface PickedFile {
 
 export default function AddAttachmentsScreen() {
     const { selectedDate, selectedProject } = useAppContext();
+    const { applyCameraWatermark } = useFieldPhotoWatermark();
     const [files, setFiles] = useState<PickedFile[]>([]);
     const [notes, setNotes] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [previewUri, setPreviewUri] = useState<string | null>(null);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -64,8 +71,9 @@ export default function AddAttachmentsScreen() {
         if (status !== 'granted') { Alert.alert('Permission needed', 'Please allow camera access.'); return; }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.85 });
         if (!result.canceled) {
+            const uri = await applyCameraWatermark(result.assets[0].uri);
             setFiles((prev) => [...prev, {
-                uri: result.assets[0].uri,
+                uri,
                 name: `photo_${Date.now()}.jpg`,
                 type: 'image',
             }]);
@@ -85,9 +93,9 @@ export default function AddAttachmentsScreen() {
         try {
             const dateKey = getDateKey(selectedDate);
             await saveAttachments(dateKey, {
-                id: Date.now().toString(),
+                id: createUuid(),
                 project: selectedProject,
-                timestamp: new Date().toISOString(),
+                timestamp: getTimestampForReportingDay(selectedDate),
                 fileNames: files.map((f) => f.name),
                 notes: notes.trim() || undefined,
                 previews: files.filter((f) => f.type === 'image').map((f) => f.uri),
@@ -128,9 +136,11 @@ export default function AddAttachmentsScreen() {
                 {files.length > 0 && (
                     <View style={styles.fileGrid}>
                         {files.map((file, idx) => (
-                            <View key={idx} style={styles.fileThumbWrap}>
+                            <View key={`${file.uri}-${idx}`} style={styles.fileThumbWrap}>
                                 {file.type === 'image' ? (
-                                    <Image source={{ uri: file.uri }} style={styles.fileThumb} />
+                                    <TouchableOpacity activeOpacity={0.85} onPress={() => setPreviewUri(file.uri)}>
+                                        <Image source={{ uri: file.uri }} style={styles.fileThumb} />
+                                    </TouchableOpacity>
                                 ) : (
                                     <View style={[styles.fileThumb, styles.fileThumbPlaceholder]}>
                                         <Ionicons name="document" size={28} color={COLORS.subtitle} />
@@ -177,6 +187,21 @@ export default function AddAttachmentsScreen() {
                             <Text style={styles.submitText}>Save Attachments ({files.length})</Text>}
                 </TouchableOpacity>
             </ScrollView>
+
+            <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri(null)}>
+                <View style={styles.lightboxBackdrop}>
+                    <TouchableOpacity style={styles.lightboxClose} onPress={() => setPreviewUri(null)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                        <Ionicons name="close-circle" size={36} color="#fff" />
+                    </TouchableOpacity>
+                    {previewUri ? (
+                        <Image
+                            source={{ uri: previewUri }}
+                            style={styles.lightboxImage}
+                            resizeMode="contain"
+                        />
+                    ) : null}
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -203,4 +228,21 @@ const styles = StyleSheet.create({
     textArea: { backgroundColor: COLORS.card, borderRadius: 14, padding: 14, color: '#fff', fontSize: 15, minHeight: 90, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, textAlignVertical: 'top' },
     submitBtn: { backgroundColor: COLORS.brand, borderRadius: 16, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 8, shadowColor: COLORS.brand, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 6 },
     submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    lightboxBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.94)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+    },
+    lightboxClose: {
+        position: 'absolute',
+        top: 52,
+        right: 16,
+        zIndex: 10,
+    },
+    lightboxImage: {
+        width: WIN.width - 24,
+        height: WIN.height * 0.82,
+    },
 });

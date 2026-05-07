@@ -13,7 +13,9 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveSurvey, getSurveyForDate, SurveyQuestionEntry } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getTimestampForReportingDay, saveSurvey, getSurveyForDate, SurveyQuestionEntry } from '@/lib/dailyReportStorage';
+import { fetchSurveyFromSupabase } from '@/lib/supabaseSync';
+import { buildSurveyTemplateApiUrl } from '@/lib/reportDashboardUrl';
 
 const COLORS = {
     brand: '#FF6633',
@@ -39,7 +41,7 @@ const SURVEY_QUESTIONS = [
     'Is any additional follow-up required for tomorrow?',
 ];
 
-const ANSWER_OPTIONS: Answer[] = ['N/A', 'No', 'Yes'];
+const DEFAULT_ANSWER_OPTIONS: Answer[] = ['N/A', 'No', 'Yes'];
 
 const ANSWER_STYLES: Record<string, { bg: string; textColor: string }> = {
     'N/A': { bg: COLORS.subtitle + '30', textColor: COLORS.subtitle },
@@ -49,11 +51,14 @@ const ANSWER_STYLES: Record<string, { bg: string; textColor: string }> = {
 
 export default function SurveyScreen() {
     const { selectedDate, selectedProject } = useAppContext();
+    const [answerOptions, setAnswerOptions] = useState<Answer[]>(DEFAULT_ANSWER_OPTIONS);
     const [questions, setQuestions] = useState<SurveyQuestionEntry[]>(
-        SURVEY_QUESTIONS.map((q, i) => ({ id: i + 1, question: q, answer: '', description: '' }))
+        SURVEY_QUESTIONS.map((q, i) => ({ id: String(i + 1), question: q, answer: '', description: '' }))
     );
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [entryId, setEntryId] = useState<string | null>(null);
+    const [mode, setMode] = useState<'overview' | 'edit'>('edit');
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -61,18 +66,66 @@ export default function SurveyScreen() {
         React.useCallback(() => {
             let active = true;
             (async () => {
+                // Load per-project template (dashboard API), fallback to hardcoded list.
+                try {
+                    const projectName = selectedProject?.name ?? '';
+                    if (projectName && projectName !== 'No Project Selected') {
+                        const res = await fetch(buildSurveyTemplateApiUrl(projectName));
+                        if (res.ok) {
+                            const json = (await res.json()) as any;
+                            const rawQuestions = Array.isArray(json?.questions) ? json.questions : [];
+                            const rawAnswers = Array.isArray(json?.answerChoices) ? json.answerChoices : null;
+
+                            const templateQuestions: SurveyQuestionEntry[] = rawQuestions
+                                .map((q: any, idx: number) => ({
+                                    id: String(q?.id ?? idx + 1),
+                                    question: String(q?.question ?? '').trim(),
+                                    answer: '',
+                                    description: '',
+                                }))
+                                .filter((q: SurveyQuestionEntry) => q.question.length > 0);
+
+                            const templateAnswerOptions: Answer[] =
+                                rawAnswers && rawAnswers.length > 0
+                                    ? (rawAnswers
+                                          .map((a: any) => String(a ?? '').trim())
+                                          .filter(Boolean) as Answer[])
+                                    : DEFAULT_ANSWER_OPTIONS;
+
+                            if (active) {
+                                if (templateQuestions.length > 0) setQuestions(templateQuestions);
+                                setAnswerOptions(templateAnswerOptions);
+                            }
+                        }
+                    }
+                } catch {
+                    // ignore (offline / bad response)
+                }
+
                 const dateKey = getDateKey(selectedDate);
-                const data = await getSurveyForDate(dateKey);
+                const localData = await getSurveyForDate(dateKey);
+                const remoteData = await fetchSurveyFromSupabase(
+                    dateKey,
+                    selectedDate,
+                    selectedProject?.id ?? '',
+                    selectedProject?.name ?? ''
+                );
+                const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
                 // Pre-fill with the first/most recent survey entry if it exists
                 if (data.length > 0 && active) {
                     const latest = data[data.length - 1]; // if multiple, use latest
+                    setEntryId(latest.id);
+                    setMode('overview');
                     if (latest.questions && latest.questions.length > 0) {
                         setQuestions(latest.questions);
                     }
+                } else if (active) {
+                    setEntryId(null);
+                    setMode('edit');
                 }
             })();
             return () => { active = false; };
-        }, [selectedDate])
+        }, [selectedDate, selectedProject?.name])
     );
 
     const setAnswer = (idx: number, answer: Answer) => {
@@ -100,14 +153,17 @@ export default function SurveyScreen() {
         setSubmitting(true);
         try {
             const dateKey = getDateKey(selectedDate);
+            const id = entryId ?? createUuid();
             await saveSurvey(dateKey, {
-                id: Date.now().toString(),
+                id,
                 project: selectedProject,
-                timestamp: new Date().toISOString(),
+                timestamp: getTimestampForReportingDay(selectedDate),
                 questions,
             });
+            setEntryId(id); // prevents duplicates on repeated saves
             setSuccess(true);
-            setTimeout(() => router.back(), 1200);
+            setMode('overview');
+            setTimeout(() => setSuccess(false), 1200);
         } catch {
             Alert.alert('Error', 'Failed to save survey. Please try again.');
         } finally {
@@ -122,9 +178,16 @@ export default function SurveyScreen() {
             <ScreenHeader
                 title="Site Survey"
                 subtitle={`${answeredCount}/${questions.length} answered`}
+                rightElement={
+                    mode === 'overview' ? (
+                        <TouchableOpacity style={styles.headerEditBtn} onPress={() => setMode('edit')} activeOpacity={0.85}>
+                            <Ionicons name="create-outline" size={18} color="#fff" />
+                            <Text style={styles.headerEditText}>Edit</Text>
+                        </TouchableOpacity>
+                    ) : null
+                }
             />
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-
                 {/* Progress bar */}
                 <View style={styles.progressWrap}>
                     <View style={styles.progressBar}>
@@ -141,7 +204,7 @@ export default function SurveyScreen() {
                             <Text style={styles.questionText}>{q.question}</Text>
 
                             <View style={styles.answerRow}>
-                                {ANSWER_OPTIONS.map((opt) => {
+                                {answerOptions.map((opt) => {
                                     const isSelected = q.answer === opt;
                                     const style = ANSWER_STYLES[opt];
                                     return (
@@ -149,12 +212,13 @@ export default function SurveyScreen() {
                                             key={opt}
                                             style={[
                                                 styles.answerBtn,
-                                                isSelected && { backgroundColor: style.bg, borderColor: style.textColor },
+                                                isSelected && style ? { backgroundColor: style.bg, borderColor: style.textColor } : null,
                                             ]}
-                                            onPress={() => setAnswer(idx, opt)}
+                                            onPress={() => { if (mode === 'edit') setAnswer(idx, opt); }}
+                                            activeOpacity={mode === 'edit' ? 0.7 : 1}
                                         >
-                                            {isSelected && <Ionicons name="checkmark" size={14} color={style.textColor} />}
-                                            <Text style={[styles.answerText, isSelected && { color: style.textColor }]}>{opt}</Text>
+                                            {isSelected && style && <Ionicons name="checkmark" size={14} color={style.textColor} />}
+                                            <Text style={[styles.answerText, isSelected && style ? { color: style.textColor } : null]}>{opt}</Text>
                                         </TouchableOpacity>
                                     );
                                 })}
@@ -165,27 +229,37 @@ export default function SurveyScreen() {
                                 <TextInput
                                     style={styles.descInput}
                                     value={q.description}
-                                    onChangeText={(v) => setDescription(idx, v)}
+                                    onChangeText={(v) => { if (mode === 'edit') setDescription(idx, v); }}
                                     placeholder="Describe the incident or concern..."
                                     placeholderTextColor={COLORS.subtitle}
                                     multiline
                                     numberOfLines={3}
                                     textAlignVertical="top"
+                                    editable={mode === 'edit'}
                                 />
                             )}
+
+                            {mode === 'overview' && !hasYes && q.description?.trim() ? (
+                                <View style={styles.readOnlyDescWrap}>
+                                    <Text style={styles.readOnlyDescLabel}>Details</Text>
+                                    <Text style={styles.readOnlyDescText}>{q.description}</Text>
+                                </View>
+                            ) : null}
                         </View>
                     );
                 })}
 
-                <TouchableOpacity
-                    style={[styles.submitBtn, (submitting || success) && { opacity: 0.7 }]}
-                    onPress={handleSubmit}
-                    disabled={submitting || success}
-                >
-                    {submitting ? <ActivityIndicator color="#fff" /> :
-                        success ? <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.submitText}>Saved!</Text></> :
-                            <Text style={styles.submitText}>Submit Survey</Text>}
-                </TouchableOpacity>
+                {mode === 'edit' && (
+                    <TouchableOpacity
+                        style={[styles.submitBtn, (submitting || success) && { opacity: 0.7 }]}
+                        onPress={handleSubmit}
+                        disabled={submitting || success}
+                    >
+                        {submitting ? <ActivityIndicator color="#fff" /> :
+                            success ? <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.submitText}>Saved!</Text></> :
+                                <Text style={styles.submitText}>Save Survey</Text>}
+                    </TouchableOpacity>
+                )}
             </ScrollView>
         </View>
     );
@@ -195,6 +269,8 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.surface },
     scroll: { flex: 1 },
     scrollContent: { padding: 16, paddingBottom: 48, gap: 14 },
+    headerEditBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12 },
+    headerEditText: { color: '#fff', fontWeight: '800', fontSize: 13 },
     progressWrap: { gap: 6 },
     progressBar: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' },
     progressFill: { height: '100%', backgroundColor: COLORS.brand, borderRadius: 2 },
@@ -227,6 +303,9 @@ const styles = StyleSheet.create({
         borderColor: COLORS.danger + '60',
         textAlignVertical: 'top',
     },
+    readOnlyDescWrap: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, gap: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+    readOnlyDescLabel: { color: COLORS.subtitle, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
+    readOnlyDescText: { color: '#fff', fontSize: 13, lineHeight: 18 },
     submitBtn: { backgroundColor: COLORS.brand, borderRadius: 16, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 8, shadowColor: COLORS.brand, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 6 },
     submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

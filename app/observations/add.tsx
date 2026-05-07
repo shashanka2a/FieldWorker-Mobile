@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     View,
     Text,
@@ -16,16 +16,21 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '@/context/AppContext';
+import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
 import {
+    createUuid,
     getDateKey,
+    getTimestampForReportingDay,
     saveObservation,
     updateObservation,
     getObservationsForDate,
     ObservationEntry,
     ObservationAssignee,
 } from '@/lib/dailyReportStorage';
+import { fetchEmployeesFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -75,15 +80,9 @@ const PRIORITY_COLORS: Record<string, string> = {
     'Critical': COLORS.danger,
 };
 
-const SAMPLE_TEAM = [
-    { name: 'Savannah Buehler', company: "Wick'd Environmental Technologies, LLC" },
-    { name: 'Ricky Smith', company: 'FieldWorker Inc.' },
-    { name: 'Mike Johnson', company: 'FieldWorker Inc.' },
-    { name: 'Emily Davis', company: 'Solar Build Co.' },
-];
-
 export default function AddObservationScreen() {
-    const { selectedDate, selectedProject, currentUser } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
+    const { applyCameraWatermark } = useFieldPhotoWatermark();
     const { editId, category: paramCategory } = useLocalSearchParams<{
         editId?: string;
         category?: string;
@@ -105,7 +104,6 @@ export default function AddObservationScreen() {
     const [dueDate, setDueDate] = useState('');
     const [resolutionPhotos, setResolutionPhotos] = useState<string[]>([]);
     const [attachments, setAttachments] = useState<string[]>([]);
-    const [teamNotifications, setTeamNotifications] = useState<string[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
     const [showMoreInfo, setShowMoreInfo] = useState(false);
@@ -113,7 +111,37 @@ export default function AddObservationScreen() {
     // Picker modals
     const [showTypePicker, setShowTypePicker] = useState(false);
     const [showStatusPicker, setShowStatusPicker] = useState(false);
+    const [showPriorityPicker, setShowPriorityPicker] = useState(false);
     const [showAssigneeSheet, setShowAssigneeSheet] = useState(false);
+    const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+    const [employeeDirectory, setEmployeeDirectory] = useState<ObservationAssignee[]>([]);
+    const [employeesLoading, setEmployeesLoading] = useState(false);
+    const [existingEntryTimestamp, setExistingEntryTimestamp] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!editId) setExistingEntryTimestamp(null);
+    }, [editId]);
+
+    const loadEmployees = useCallback(async () => {
+        setEmployeesLoading(true);
+        try {
+            const rows = await fetchEmployeesFromSupabase({
+                projectId: selectedProject.id,
+                projectName: selectedProject.name,
+            });
+            setEmployeeDirectory(rows.filter((r) => r.name.length > 0));
+        } finally {
+            setEmployeesLoading(false);
+        }
+    }, [selectedProject.id, selectedProject.name]);
+
+    useEffect(() => {
+        loadEmployees();
+    }, [loadEmployees]);
+
+    useEffect(() => {
+        if (showAssigneeSheet) loadEmployees();
+    }, [showAssigneeSheet, loadEmployees]);
 
     // Load existing observation for editing
     useEffect(() => {
@@ -133,7 +161,7 @@ export default function AddObservationScreen() {
                     setDueDate(existing.dueDate ?? '');
                     setResolutionPhotos(existing.resolutionPhotos ?? []);
                     setAttachments(existing.attachments ?? []);
-                    setTeamNotifications(existing.teamNotifications ?? []);
+                    setExistingEntryTimestamp(existing.timestamp);
                 }
             })();
         }
@@ -177,10 +205,11 @@ export default function AddObservationScreen() {
         }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
         if (!result.canceled) {
+            const uri = await applyCameraWatermark(result.assets[0].uri);
             if (target === 'resolution') {
-                setResolutionPhotos((prev) => [...prev, result.assets[0].uri]);
+                setResolutionPhotos((prev) => [...prev, uri]);
             } else {
-                setAttachments((prev) => [...prev, result.assets[0].uri]);
+                setAttachments((prev) => [...prev, uri]);
             }
         }
     };
@@ -201,9 +230,9 @@ export default function AddObservationScreen() {
         try {
             const dateKey = getDateKey(selectedDate);
             const entry: ObservationEntry = {
-                id: editId ?? Date.now().toString(),
+                id: editId ?? createUuid(),
                 project: selectedProject,
-                timestamp: new Date().toISOString(),
+                timestamp: existingEntryTimestamp ?? getTimestampForReportingDay(selectedDate),
                 category,
                 type,
                 status,
@@ -214,7 +243,6 @@ export default function AddObservationScreen() {
                 dueDate: dueDate || undefined,
                 resolutionPhotos: resolutionPhotos.length > 0 ? resolutionPhotos : undefined,
                 attachments: attachments.length > 0 ? attachments : undefined,
-                teamNotifications: teamNotifications.length > 0 ? teamNotifications : undefined,
             };
 
             if (isEditing) {
@@ -239,6 +267,20 @@ export default function AddObservationScreen() {
             year: 'numeric',
         })
         : 'Not set';
+
+    const dueDateAsDate = useMemo(() => {
+        if (!dueDate) return new Date();
+        const d = new Date(dueDate);
+        return Number.isNaN(d.getTime()) ? new Date() : d;
+    }, [dueDate]);
+
+    const onDueDatePickerChange = (event: DateTimePickerEvent, selected?: Date) => {
+        if (Platform.OS === 'android') {
+            setShowDueDatePicker(false);
+        }
+        if (event.type === 'dismissed') return;
+        if (selected) setDueDate(selected.toISOString());
+    };
 
     const initials = (name: string) => {
         const parts = name.split(' ');
@@ -345,10 +387,7 @@ export default function AddObservationScreen() {
                     {/* Priority */}
                     <TouchableOpacity
                         style={styles.fieldRow}
-                        onPress={() => {
-                            const idx = PRIORITIES.indexOf(priority);
-                            setPriority(PRIORITIES[(idx + 1) % PRIORITIES.length]);
-                        }}
+                        onPress={() => setShowPriorityPicker(true)}
                     >
                         <View style={{ flex: 1 }}>
                             <Text style={styles.fieldSubLabel}>Priority</Text>
@@ -356,9 +395,7 @@ export default function AddObservationScreen() {
                                 {priority}
                             </Text>
                         </View>
-                        <TouchableOpacity onPress={() => setPriority('Medium')}>
-                            <Ionicons name="close-circle-outline" size={22} color={COLORS.subtitle} />
-                        </TouchableOpacity>
+                        <Ionicons name="chevron-forward" size={18} color={COLORS.subtitle} />
                     </TouchableOpacity>
                 </View>
 
@@ -433,10 +470,28 @@ export default function AddObservationScreen() {
 
                 {/* Due Date */}
                 <View style={styles.fieldCard}>
-                    <View style={styles.fieldRow}>
-                        <Text style={styles.fieldLabel}>Due Date:</Text>
-                        <Text style={styles.dueDateText}>{dueDateLabel}</Text>
-                    </View>
+                    <TouchableOpacity
+                        style={styles.fieldRow}
+                        onPress={() => setShowDueDatePicker(true)}
+                        activeOpacity={0.7}
+                    >
+                        <View style={{ flex: 1 }}>
+                            <Text style={styles.fieldSubLabel}>Due Date</Text>
+                            <Text style={[styles.fieldValue, !dueDate && { color: COLORS.subtitle }]}>
+                                {dueDateLabel}
+                            </Text>
+                        </View>
+                        <Ionicons name="calendar-outline" size={22} color={COLORS.subtitle} />
+                    </TouchableOpacity>
+                    {dueDate ? (
+                        <TouchableOpacity
+                            style={styles.clearDueDateRow}
+                            onPress={() => setDueDate('')}
+                            hitSlop={{ top: 8, bottom: 8 }}
+                        >
+                            <Text style={styles.clearDueDateText}>Clear due date</Text>
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
 
                 {/* Resolution Photos */}
@@ -477,33 +532,50 @@ export default function AddObservationScreen() {
                     )}
                 </View>
 
-                {/* Team Member Notifications */}
-                <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Team Member Notifications ({teamNotifications.length})</Text>
-                    <TouchableOpacity onPress={() => {
-                        // Add a team notification
-                        const name = currentUser.name;
-                        if (!teamNotifications.includes(name)) {
-                            setTeamNotifications((prev) => [...prev, name]);
-                        }
-                    }}>
-                        <Ionicons name="add-circle-outline" size={24} color={COLORS.brand} />
-                    </TouchableOpacity>
-                </View>
-
-                {teamNotifications.map((name, idx) => (
-                    <View key={idx} style={styles.notificationCard}>
-                        <Ionicons name="notifications-outline" size={18} color={COLORS.brand} />
-                        <Text style={styles.notificationName}>{name}</Text>
-                        <TouchableOpacity onPress={() => setTeamNotifications((prev) => prev.filter((_, i) => i !== idx))}>
-                            <Ionicons name="close-circle" size={18} color={COLORS.subtitle} />
-                        </TouchableOpacity>
-                    </View>
-                ))}
-
                 {/* Bottom spacing */}
                 <View style={{ height: 40 }} />
             </ScrollView>
+
+            {showDueDatePicker && Platform.OS === 'android' ? (
+                <DateTimePicker
+                    value={dueDateAsDate}
+                    mode="date"
+                    display="default"
+                    onChange={onDueDatePickerChange}
+                />
+            ) : null}
+
+            <Modal
+                visible={showDueDatePicker && Platform.OS === 'ios'}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setShowDueDatePicker(false)}
+            >
+                <Pressable style={styles.sheetBackdrop} onPress={() => setShowDueDatePicker(false)}>
+                    <Pressable
+                        style={[styles.sheetContainer, { paddingBottom: insets.bottom + 20 }]}
+                        onPress={(e) => e.stopPropagation()}
+                    >
+                        <View style={styles.sheetHandle} />
+                        <Text style={styles.sheetTitle}>Due date</Text>
+                        <DateTimePicker
+                            value={dueDateAsDate}
+                            mode="date"
+                            display="spinner"
+                            themeVariant="dark"
+                            onChange={(_, date) => {
+                                if (date) setDueDate(date.toISOString());
+                            }}
+                        />
+                        <TouchableOpacity
+                            style={styles.sheetCancelBtn}
+                            onPress={() => setShowDueDatePicker(false)}
+                        >
+                            <Text style={styles.sheetCancelText}>Done</Text>
+                        </TouchableOpacity>
+                    </Pressable>
+                </Pressable>
+            </Modal>
 
             {/* Type Picker Modal */}
             <Modal
@@ -568,6 +640,37 @@ export default function AddObservationScreen() {
                 </Pressable>
             </Modal>
 
+            {/* Priority Picker Modal */}
+            <Modal
+                visible={showPriorityPicker}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setShowPriorityPicker(false)}
+            >
+                <Pressable style={styles.sheetBackdrop} onPress={() => setShowPriorityPicker(false)}>
+                    <View style={styles.sheetContainer}>
+                        <View style={styles.sheetHandle} />
+                        <Text style={styles.sheetTitle}>Priority</Text>
+                        {PRIORITIES.map((p) => (
+                            <TouchableOpacity
+                                key={p}
+                                style={[styles.sheetOption, priority === p && styles.sheetOptionActive]}
+                                onPress={() => {
+                                    setPriority(p);
+                                    setShowPriorityPicker(false);
+                                }}
+                            >
+                                <View style={[styles.priorityDot, { backgroundColor: PRIORITY_COLORS[p] }]} />
+                                <Text style={[styles.sheetOptionText, { color: PRIORITY_COLORS[p] }]}>{p}</Text>
+                                {priority === p && (
+                                    <Ionicons name="checkmark" size={18} color={COLORS.brand} style={{ marginLeft: 'auto' }} />
+                                )}
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Pressable>
+            </Modal>
+
             {/* Add Assignee Sheet */}
             <Modal
                 visible={showAssigneeSheet}
@@ -579,28 +682,40 @@ export default function AddObservationScreen() {
                     <View style={styles.sheetContainer}>
                         <View style={styles.sheetHandle} />
                         <Text style={styles.sheetTitle}>Add Assignee</Text>
-                        {SAMPLE_TEAM.map((person) => {
-                            const isAssigned = assignees.some((a) => a.name === person.name);
-                            return (
-                                <TouchableOpacity
-                                    key={person.name}
-                                    style={[styles.sheetOption, isAssigned && styles.sheetOptionActive]}
-                                    onPress={() => addAssignee(person)}
-                                    disabled={isAssigned}
-                                >
-                                    <View style={styles.sheetAvatar}>
-                                        <Text style={styles.sheetAvatarText}>{initials(person.name)}</Text>
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={styles.sheetOptionText}>{person.name}</Text>
-                                        <Text style={styles.sheetOptionSubtext}>{person.company}</Text>
-                                    </View>
-                                    {isAssigned && (
-                                        <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
-                                    )}
-                                </TouchableOpacity>
-                            );
-                        })}
+                        {employeesLoading ? (
+                            <View style={styles.sheetLoading}>
+                                <ActivityIndicator color={COLORS.brand} />
+                            </View>
+                        ) : employeeDirectory.length === 0 ? (
+                            <Text style={styles.sheetEmptyText}>
+                                No employees found. Your admin can add people to the employees table in Supabase.
+                            </Text>
+                        ) : (
+                            employeeDirectory.map((person) => {
+                                const isAssigned = assignees.some((a) => a.name === person.name);
+                                return (
+                                    <TouchableOpacity
+                                        key={person.name}
+                                        style={[styles.sheetOption, isAssigned && styles.sheetOptionActive]}
+                                        onPress={() => addAssignee(person)}
+                                        disabled={isAssigned}
+                                    >
+                                        <View style={styles.sheetAvatar}>
+                                            <Text style={styles.sheetAvatarText}>{initials(person.name)}</Text>
+                                        </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.sheetOptionText}>{person.name}</Text>
+                                            <Text style={styles.sheetOptionSubtext}>
+                                                {person.company || '—'}
+                                            </Text>
+                                        </View>
+                                        {isAssigned && (
+                                            <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
+                                        )}
+                                    </TouchableOpacity>
+                                );
+                            })
+                        )}
                         <TouchableOpacity
                             style={styles.sheetCancelBtn}
                             onPress={() => setShowAssigneeSheet(false)}
@@ -736,7 +851,8 @@ const styles = StyleSheet.create({
     assigneeCompany: { color: COLORS.subtitle, fontSize: 13 },
 
     // Due date
-    dueDateText: { color: COLORS.subtitle, fontSize: 14 },
+    clearDueDateRow: { paddingHorizontal: 14, paddingBottom: 12, paddingTop: 0 },
+    clearDueDateText: { color: COLORS.subtitle, fontSize: 13, fontWeight: '500' },
 
     // Resolution
     resolutionSection: {
@@ -766,21 +882,19 @@ const styles = StyleSheet.create({
     photoThumb: { width: 70, height: 70, borderRadius: 10 },
     removePhoto: { position: 'absolute', top: -6, right: -6 },
 
-    // Notification card
-    notificationCard: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        backgroundColor: COLORS.card,
-        borderRadius: 12,
-        padding: 12,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: COLORS.border,
-    },
-    notificationName: { flex: 1, color: '#fff', fontSize: 14, fontWeight: '500' },
-
     // Status dot
     statusDot: { width: 8, height: 8, borderRadius: 4 },
+    priorityDot: { width: 8, height: 8, borderRadius: 4 },
+
+    sheetLoading: { paddingVertical: 28, alignItems: 'center' },
+    sheetEmptyText: {
+        color: COLORS.subtitle,
+        fontSize: 14,
+        textAlign: 'center',
+        paddingVertical: 20,
+        paddingHorizontal: 8,
+        lineHeight: 20,
+    },
 
     // Sheet
     sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },

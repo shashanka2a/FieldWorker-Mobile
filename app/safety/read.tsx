@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
-import { getTemplateById } from '@/lib/safetyTemplates';
+import { getTemplateById, type SafetyTemplate } from '@/lib/safetyTemplates';
+import { fetchSafetyTalkTemplateByIdFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -16,9 +17,29 @@ const COLORS = {
 
 export default function SafetyReadScreen() {
     const { templateId, mode } = useLocalSearchParams<{ templateId: string; mode?: string }>();
-    const template = getTemplateById(templateId);
+    const fallback = useMemo(() => getTemplateById(templateId), [templateId]);
+    const [template, setTemplate] = useState<SafetyTemplate | null>(null);
+    const [loading, setLoading] = useState(true);
 
-    if (!template) {
+    useEffect(() => {
+        let mounted = true;
+        setLoading(true);
+        (async () => {
+            try {
+                const remote = await fetchSafetyTalkTemplateByIdFromSupabase(templateId);
+                if (mounted) setTemplate(remote);
+            } finally {
+                if (mounted) setLoading(false);
+            }
+        })();
+        return () => {
+            mounted = false;
+        };
+    }, [templateId]);
+
+    const resolved = template ?? fallback;
+
+    if (!resolved && !loading) {
         return (
             <View style={styles.container}>
                 <ScreenHeader title="Safety Talk" />
@@ -33,7 +54,7 @@ export default function SafetyReadScreen() {
     return (
         <View style={styles.container}>
             <ScreenHeader
-                title={template.name}
+                title={resolved?.name ?? 'Safety Talk'}
                 subtitle="Safety Talk"
                 rightElement={
                     mode === 'start' ? (
@@ -47,17 +68,24 @@ export default function SafetyReadScreen() {
                     ) : null
                 }
             />
-            <WebView
-                source={{ uri: template.pdfUrl }}
-                style={styles.webView}
-                startInLoadingState
-                renderLoading={() => (
-                    <View style={styles.loadingOverlay}>
-                        <ActivityIndicator color={COLORS.brand} size="large" />
-                        <Text style={styles.loadingText}>Loading document...</Text>
-                    </View>
-                )}
-            />
+            {resolved?.pdfUrl ? (
+                <WebView
+                    source={{ uri: resolved.pdfUrl }}
+                    style={styles.webView}
+                    startInLoadingState
+                    renderLoading={() => (
+                        <View style={styles.loadingOverlay}>
+                            <ActivityIndicator color={COLORS.brand} size="large" />
+                            <Text style={styles.loadingText}>Loading document...</Text>
+                        </View>
+                    )}
+                />
+            ) : (
+                <View style={styles.notFound}>
+                    <ActivityIndicator color={COLORS.brand} size="large" />
+                    <Text style={styles.notFoundText}>Loading safety talk…</Text>
+                </View>
+            )}
             {mode === 'start' && (
                 <View style={styles.footer}>
                     <TouchableOpacity

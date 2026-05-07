@@ -58,6 +58,26 @@ export async function addScheduledSafetyTalk(
     syncSafetyTalkToSupabase(talk).catch(console.error);
 }
 
+/** Used by signature flows: create a completed talk that shows under "Done" immediately. */
+export async function addConductedSafetyTalk(
+    dateKey: string,
+    templateId: string,
+    templateName: string
+): Promise<void> {
+    const talks = await readTalks();
+    const talk: SafetyTalk = {
+        id: Date.now().toString(),
+        templateId,
+        templateName,
+        date: dateKey,
+        status: 'conducted',
+        createdAt: new Date().toISOString(),
+    };
+    talks.push(talk);
+    await writeTalks(talks);
+    syncSafetyTalkToSupabase(talk).catch(console.error);
+}
+
 export async function updateScheduledSafetyTalk(
     id: string,
     dateKey: string,

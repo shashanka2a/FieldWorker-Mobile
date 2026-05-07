@@ -15,7 +15,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveNotes, getNotesForDate, NoteEntry } from '@/lib/dailyReportStorage';
+import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
+import { createUuid, getDateKey, getTimestampForReportingDay, saveNotes, getNotesForDate } from '@/lib/dailyReportStorage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -28,17 +29,24 @@ const COLORS = {
     success: '#30D158',
 };
 
-const CATEGORIES = ['General', 'Safety', 'Equipment', 'Weather', 'Incident'];
+const CATEGORIES = ['General', 'Safety', 'Equipment', 'Weather', 'Incident', 'Custom'] as const;
 
 export default function AddNoteScreen() {
     const { selectedDate, selectedProject } = useAppContext();
+    const { applyCameraWatermark } = useFieldPhotoWatermark();
     const { editId } = useLocalSearchParams<{ editId?: string }>();
-    const [category, setCategory] = useState('General');
+    const [category, setCategory] = useState<(typeof CATEGORIES)[number]>('General');
+    const [customCategory, setCustomCategory] = useState('');
     const [notes, setNotes] = useState('');
     const [photos, setPhotos] = useState<string[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [existingEntryTimestamp, setExistingEntryTimestamp] = useState<string | null>(null);
     const isEditing = !!editId;
+
+    useEffect(() => {
+        if (!editId) setExistingEntryTimestamp(null);
+    }, [editId]);
 
     // Load existing note for editing
     useEffect(() => {
@@ -46,15 +54,23 @@ export default function AddNoteScreen() {
             (async () => {
                 const dateKey = getDateKey(selectedDate);
                 const allNotes = await getNotesForDate(dateKey);
-                const existing = allNotes.find((n) => n.id === editId);
+                const existing = allNotes.find((n) => n.id === editId && n.project?.name === selectedProject?.name);
                 if (existing) {
-                    setCategory(existing.category);
+                    const isPreset = (CATEGORIES as readonly string[]).includes(existing.category);
+                    if (isPreset) {
+                        setCategory(existing.category as (typeof CATEGORIES)[number]);
+                        setCustomCategory('');
+                    } else {
+                        setCategory('Custom');
+                        setCustomCategory(existing.category ?? '');
+                    }
                     setNotes(existing.notes);
                     setPhotos(existing.photos ?? []);
+                    setExistingEntryTimestamp(existing.timestamp);
                 }
             })();
         }
-    }, [editId, selectedDate]);
+    }, [editId, selectedDate, selectedProject?.name]);
 
     const pickImage = async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -80,7 +96,8 @@ export default function AddNoteScreen() {
         }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
         if (!result.canceled) {
-            setPhotos((prev) => [...prev, result.assets[0].uri]);
+            const uri = await applyCameraWatermark(result.assets[0].uri);
+            setPhotos((prev) => [...prev, uri]);
         }
     };
 
@@ -89,14 +106,18 @@ export default function AddNoteScreen() {
             Alert.alert('Required', 'Please enter a note before saving.');
             return;
         }
+        const categoryToSave =
+            category === 'Custom'
+                ? (customCategory.trim() || 'General')
+                : category;
         setSubmitting(true);
         try {
             const dateKey = getDateKey(selectedDate);
             await saveNotes(dateKey, {
-                id: editId ?? Date.now().toString(),
+                id: editId ?? createUuid(),
                 project: selectedProject,
-                timestamp: isEditing ? new Date().toISOString() : new Date().toISOString(),
-                category,
+                timestamp: existingEntryTimestamp ?? getTimestampForReportingDay(selectedDate),
+                category: categoryToSave,
                 notes: notes.trim(),
                 photos,
             });
@@ -138,6 +159,18 @@ export default function AddNoteScreen() {
                             </TouchableOpacity>
                         ))}
                     </ScrollView>
+                    {category === 'Custom' && (
+                        <View style={{ marginTop: 10 }}>
+                            <TextInput
+                                style={styles.customCategoryInput}
+                                value={customCategory}
+                                onChangeText={setCustomCategory}
+                                placeholder="Enter custom category…"
+                                placeholderTextColor={COLORS.subtitle}
+                                autoCapitalize="words"
+                            />
+                        </View>
+                    )}
                 </View>
 
                 {/* Notes input */}
@@ -221,6 +254,7 @@ const styles = StyleSheet.create({
     categoryChipActive: { backgroundColor: COLORS.brand, borderColor: COLORS.brand },
     categoryChipText: { color: COLORS.subtitle, fontSize: 14, fontWeight: '600' },
     categoryChipTextActive: { color: '#fff' },
+    customCategoryInput: { backgroundColor: COLORS.card, borderRadius: 12, padding: 14, color: '#fff', fontSize: 15, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     textArea: {
         backgroundColor: COLORS.card,
         borderRadius: 14,

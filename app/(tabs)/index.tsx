@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -13,14 +13,11 @@ import {
     Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppContext } from '@/context/AppContext';
-import {
-    getDateKey,
-    getSignedReport,
-    hasDataForDate,
-} from '@/lib/dailyReportStorage';
+import * as DailyReportStorage from '@/lib/dailyReportStorage';
+import { fetchCalendarMonthActivityAndSignedFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -63,40 +60,56 @@ export default function HomeScreen() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Load day statuses for calendar
+    // Load day statuses for calendar: green = signed, yellow = has data but unsigned, red triangle = missing (weekdays).
+    // Scoped to the selected project; merges local AsyncStorage + Supabase for the visible month.
     const loadDayStatuses = useCallback(async () => {
         const year = selectedDate.getFullYear();
         const month = selectedDate.getMonth();
         const daysInMonth = new Date(year, month + 1, 0).getDate();
         const statuses: Record<string, DayStatus> = {};
+        const projectId = selectedProject?.id ?? '';
+        const projectName = selectedProject?.name ?? '';
 
-        const promises = [];
+        let remoteActivity = new Set<string>();
+        let remoteSigned = new Set<string>();
+        try {
+            const remote = await fetchCalendarMonthActivityAndSignedFromSupabase(year, month, projectId, projectName);
+            remoteActivity = remote.activityDates;
+            remoteSigned = remote.signedDates;
+        } catch {
+            /* offline / network */
+        }
+
+        const promises: Promise<void>[] = [];
         for (let day = 1; day <= daysInMonth; day++) {
             const date = new Date(year, month, day);
             const dayOfWeek = date.getDay();
-            // Skip weekends
             if (dayOfWeek === 0 || dayOfWeek === 6) continue;
             if (date > today) continue;
 
-            const dateKey = getDateKey(date);
+            const dateKey = DailyReportStorage.getDateKey(date);
             promises.push(
-                Promise.all([
-                    hasDataForDate(dateKey),
-                    getSignedReport(dateKey),
-                ]).then(([hasData, signed]) => {
+                (async () => {
+                    const hasLocalOrRemote =
+                        (await DailyReportStorage.hasDataForDateForProject(dateKey, projectName)) ||
+                        remoteActivity.has(dateKey);
+                    const localSigned = await DailyReportStorage.isReportFullySignedForProject(dateKey, projectName);
+                    const signed = localSigned || remoteSigned.has(dateKey);
                     if (signed) statuses[dateKey] = 'signed';
-                    else if (hasData) statuses[dateKey] = 'unsigned';
+                    else if (hasLocalOrRemote) statuses[dateKey] = 'unsigned';
                     else statuses[dateKey] = 'missing';
-                })
+                })()
             );
         }
         await Promise.all(promises);
         setDayStatuses(statuses);
-    }, [selectedDate]);
+    }, [selectedDate, selectedProject?.id, selectedProject?.name]);
 
-    useEffect(() => {
-        loadDayStatuses();
-    }, [loadDayStatuses]);
+    useFocusEffect(
+        useCallback(() => {
+            loadDayStatuses();
+        }, [loadDayStatuses])
+    );
 
     // Build weekdays strip: Current week containing selected date (Sun-Sat)
     const buildWeekdays = (): Date[] => {
@@ -141,12 +154,16 @@ export default function HomeScreen() {
     const handleTilePress = (route: string) => {
         setNavigatingTo(route);
         setTimeout(() => {
-            router.push(route as any);
+            const dest =
+                route === '/report/preview'
+                    ? `/report/preview?date=${DailyReportStorage.getDateKey(selectedDate)}`
+                    : route;
+            router.push(dest as any);
             setTimeout(() => setNavigatingTo(null), 500);
         }, 100);
     };
 
-    const reportDateKey = getDateKey(selectedDate);
+    const reportDateKey = DailyReportStorage.getDateKey(selectedDate);
     const selectedDateLabel = selectedDate.toLocaleDateString('en-US', {
         weekday: 'short',
         month: 'short',
@@ -330,7 +347,7 @@ export default function HomeScreen() {
                             {calendarDays.map((day, idx) => {
                                 if (!day) return <View key={idx} style={styles.calendarDay} />;
                                 const date = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), day);
-                                const dateKey = getDateKey(date);
+                                const dateKey = DailyReportStorage.getDateKey(date);
                                 const status = dayStatuses[dateKey] ?? 'none';
                                 const isSelected = date.toDateString() === selectedDate.toDateString();
                                 const isTodayDate = date.toDateString() === today.toDateString();

@@ -21,6 +21,7 @@ import {
     deleteObservation,
     ObservationEntry,
 } from '@/lib/dailyReportStorage';
+import { fetchObservationsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -52,7 +53,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 export default function ObservationsListScreen() {
-    const { selectedDate } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
     const [observations, setObservations] = useState<ObservationEntry[]>([]);
     const [filteredObservations, setFilteredObservations] = useState<ObservationEntry[]>([]);
     const [refreshing, setRefreshing] = useState(false);
@@ -63,9 +64,16 @@ export default function ObservationsListScreen() {
 
     const loadObservations = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const data = await getObservationsForDate(dateKey);
+        const localData = await getObservationsForDate(dateKey);
+        const remoteData = await fetchObservationsFromSupabase(
+            dateKey,
+            selectedDate,
+            selectedProject?.id ?? '',
+            selectedProject?.name ?? ''
+        );
+        const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
         setObservations(data.reverse());
-    }, [selectedDate]);
+    }, [selectedDate, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadObservations(); }, [loadObservations]));
 

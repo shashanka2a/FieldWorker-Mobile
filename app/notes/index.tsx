@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
 import { getDateKey, getNotesForDate, NoteEntry } from '@/lib/dailyReportStorage';
+import { fetchNotesFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -32,15 +33,32 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 export default function NotesListScreen() {
-    const { selectedDate } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
     const [notes, setNotes] = useState<NoteEntry[]>([]);
     const [refreshing, setRefreshing] = useState(false);
 
     const loadNotes = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const data = await getNotesForDate(dateKey);
-        setNotes(data.reverse()); // newest first
-    }, [selectedDate]);
+        const localData = await getNotesForDate(dateKey);
+        const localFiltered = localData.filter((n) => n.project?.name === selectedProject?.name);
+        const remoteData = await fetchNotesFromSupabase(
+            dateKey,
+            selectedDate,
+            selectedProject?.id ?? '',
+            selectedProject?.name ?? ''
+        );
+
+        const merged = [...localFiltered, ...remoteData];
+        const deduped = merged.filter((note, idx, arr) => {
+            const key = `${note.project?.name}|${note.category}|${note.notes}|${note.timestamp}`;
+            return idx === arr.findIndex((other) =>
+                `${other.project?.name}|${other.category}|${other.notes}|${other.timestamp}` === key
+            );
+        });
+
+        deduped.sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp));
+        setNotes(deduped);
+    }, [selectedDate, selectedProject?.id, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadNotes(); }, [loadNotes]));
 
@@ -56,7 +74,7 @@ export default function NotesListScreen() {
 
     return (
         <View style={styles.container}>
-            <ScreenHeader title="Notes" subtitle={dateLabel} />
+            <ScreenHeader title="Notes" subtitle={`${selectedProject.name} • ${dateLabel}`} />
             <ScrollView
                 style={styles.scrollView}
                 contentContainerStyle={styles.scrollContent}

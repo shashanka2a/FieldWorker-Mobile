@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     View,
     Text,
@@ -15,6 +15,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useLocalSearchParams } from 'expo-router';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const COLORS = {
     brand: '#FF6633',
@@ -63,6 +66,7 @@ export default function GalleryScreen() {
     const [photos, setPhotos] = useState<GalleryPhoto[]>([]);
     const [selected, setSelected] = useState<GalleryPhoto | null>(null);
     const [refreshing, setRefreshing] = useState(false);
+    const { uri: uriParam } = useLocalSearchParams<{ uri?: string }>();
 
     const loadPhotos = useCallback(async () => {
         const data = await getAllPhotos();
@@ -70,6 +74,13 @@ export default function GalleryScreen() {
     }, []);
 
     useEffect(() => { loadPhotos(); }, [loadPhotos]);
+
+    // Deep-link from report preview into a specific photo.
+    useEffect(() => {
+        if (!uriParam || photos.length === 0) return;
+        const match = photos.find((p) => p.uri === uriParam);
+        if (match) setSelected(match);
+    }, [photos, uriParam]);
 
     const onRefresh = async () => {
         setRefreshing(true);
@@ -84,6 +95,30 @@ export default function GalleryScreen() {
         equipment: 'Equipment',
         attachments: 'Attachments',
     };
+
+    const canShare = useMemo(() => Sharing.isAvailableAsync(), []);
+
+    const ensureLocalFileForShare = useCallback(async (uri: string) => {
+        if (uri.startsWith('file://')) return uri;
+        if (!uri.startsWith('http')) return uri;
+        const ext = uri.toLowerCase().includes('.png') ? 'png' : 'jpg';
+        const dest = `${FileSystem.cacheDirectory}fw_gallery_${Date.now()}.${ext}`;
+        const result = await FileSystem.downloadAsync(uri, dest);
+        return result.uri;
+    }, []);
+
+    const handleShareSelected = useCallback(async () => {
+        if (!selected) return;
+        try {
+            if (!(await Sharing.isAvailableAsync())) {
+                return;
+            }
+            const localUri = await ensureLocalFileForShare(selected.uri);
+            await Sharing.shareAsync(localUri);
+        } catch {
+            // Share is best-effort; modal stays open.
+        }
+    }, [ensureLocalFileForShare, selected]);
 
     return (
         <View style={[styles.container, { paddingTop: 0 }]}>
@@ -122,6 +157,9 @@ export default function GalleryScreen() {
                             <TouchableOpacity style={styles.lightboxClose} onPress={() => setSelected(null)}>
                                 <Ionicons name="close-circle" size={32} color="#fff" />
                             </TouchableOpacity>
+                            <TouchableOpacity style={styles.lightboxShare} onPress={handleShareSelected}>
+                                <Ionicons name="download-outline" size={22} color="#fff" />
+                            </TouchableOpacity>
                             <View style={styles.lightboxMeta}>
                                 <Text style={styles.lightboxSource}>{SOURCE_LABELS[selected.source] ?? selected.source}</Text>
                             </View>
@@ -148,6 +186,7 @@ const styles = StyleSheet.create({
     lightboxContent: { width: '100%', height: '80%', alignItems: 'center', justifyContent: 'center' },
     lightboxImage: { width: '100%', height: '100%' },
     lightboxClose: { position: 'absolute', top: 16, right: 16 },
+    lightboxShare: { position: 'absolute', top: 16, left: 16, backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 18, padding: 8 },
     lightboxMeta: { position: 'absolute', bottom: 16 },
     lightboxSource: { color: 'rgba(255,255,255,0.7)', fontSize: 13 },
 });

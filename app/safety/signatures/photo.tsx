@@ -13,7 +13,9 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
 import { getTemplateById } from '@/lib/safetyTemplates';
+import { addConductedSafetyTalk } from '@/lib/safetyStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const COLORS = {
@@ -28,6 +30,7 @@ const COLORS = {
 export default function PhotoSignaturesScreen() {
     const { templateId } = useLocalSearchParams<{ templateId?: string }>();
     const template = getTemplateById(templateId ?? '');
+    const { applyCameraWatermark } = useFieldPhotoWatermark();
 
     const [photos, setPhotos] = useState<string[]>([]);
     const [saving, setSaving] = useState(false);
@@ -41,7 +44,8 @@ export default function PhotoSignaturesScreen() {
         }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.85 });
         if (!result.canceled) {
-            setPhotos((prev) => [...prev, result.assets[0].uri]);
+            const uri = await applyCameraWatermark(result.assets[0].uri);
+            setPhotos((prev) => [...prev, uri]);
         }
     };
 
@@ -68,6 +72,8 @@ export default function PhotoSignaturesScreen() {
         }
         setSaving(true);
         try {
+            const now = new Date();
+            const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const key = `safety_sig_photo_${templateId}_${Date.now()}`;
             await AsyncStorage.setItem(key, JSON.stringify({
                 templateId,
@@ -75,8 +81,11 @@ export default function PhotoSignaturesScreen() {
                 photos,
                 completedAt: new Date().toISOString(),
             }));
+            if (templateId) {
+                await addConductedSafetyTalk(dateKey, templateId, template?.name ?? '');
+            }
             setSaved(true);
-            setTimeout(() => router.push('/safety' as any), 1000);
+            setTimeout(() => router.replace('/safety?tab=conducted' as any), 500);
         } catch {
             Alert.alert('Error', 'Failed to save. Please try again.');
         } finally {

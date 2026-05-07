@@ -5,6 +5,24 @@ CREATE TABLE IF NOT EXISTS public.projects (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Directory (field + web). Filter in app by assigned_projects @> selected project name.
+CREATE TABLE IF NOT EXISTS public.employees (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  role TEXT,
+  status TEXT,
+  assigned_projects TEXT[] DEFAULT '{}',
+  email TEXT,
+  phone TEXT,
+  employee_id TEXT,
+  classification TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_employees_name ON public.employees (name);
+CREATE INDEX IF NOT EXISTS idx_employees_assigned_projects ON public.employees USING gin (assigned_projects);
+
 -- 2. Daily Notes
 CREATE TABLE IF NOT EXISTS public.notes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -33,6 +51,26 @@ CREATE TABLE IF NOT EXISTS public.chemical_applications (
   unit TEXT NOT NULL
 );
 
+-- Company chemical presets (controls the rows shown in the mobile Chemicals UI).
+-- You indicated this table already exists in Supabase; keeping it in schema.sql for new envs.
+CREATE TABLE IF NOT EXISTS public.company_chemical_presets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_type TEXT NOT NULL CHECK (application_type IN ('wicking', 'spraying')),
+  name TEXT NOT NULL,
+  unit TEXT NOT NULL DEFAULT 'oz',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE (application_type, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_chemical_presets_application_type ON public.company_chemical_presets (application_type);
+
+ALTER TABLE public.company_chemical_presets ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public read company_chemical_presets" ON public.company_chemical_presets;
+CREATE POLICY "Allow public read company_chemical_presets"
+  ON public.company_chemical_presets FOR SELECT USING (true);
+
 -- 4. Metrics
 CREATE TABLE IF NOT EXISTS public.metrics (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -50,8 +88,13 @@ CREATE TABLE IF NOT EXISTS public.metrics (
 CREATE TABLE IF NOT EXISTS public.safety_talk_templates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
-  description TEXT
+  description TEXT,
+  pdf_url TEXT
 );
+
+-- Backfill for older deployments (safe if column already exists)
+ALTER TABLE IF EXISTS public.safety_talk_templates
+  ADD COLUMN IF NOT EXISTS pdf_url TEXT;
 
 CREATE TABLE IF NOT EXISTS public.safety_talks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

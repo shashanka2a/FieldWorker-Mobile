@@ -16,7 +16,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, saveMetrics, getMetricsForDate } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getTimestampForReportingDay, saveMetrics, getMetricsForDate } from '@/lib/dailyReportStorage';
+import { fetchMetricsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -54,6 +55,8 @@ export default function MetricsScreen() {
     const [photos, setPhotos] = useState<string[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [entryId, setEntryId] = useState<string | null>(null);
+    const [mode, setMode] = useState<'overview' | 'edit'>('edit');
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -62,10 +65,19 @@ export default function MetricsScreen() {
             let active = true;
             (async () => {
                 const dateKey = getDateKey(selectedDate);
-                const data = await getMetricsForDate(dateKey);
+                const localData = await getMetricsForDate(dateKey);
+                const remoteData = await fetchMetricsFromSupabase(
+                    dateKey,
+                    selectedDate,
+                    selectedProject?.id ?? '',
+                    selectedProject?.name ?? ''
+                );
+                const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
                 // Pre-fill with the first/most recent metric entry if it exists
                 if (data.length > 0 && active) {
                     const latest = data[data.length - 1]; // if multiple, use latest
+                    setEntryId(latest.id);
+                    setMode('overview');
                     setValues({
                         waterUsage: latest.waterUsage || '',
                         acresCompleted: latest.acresCompleted || '',
@@ -74,10 +86,13 @@ export default function MetricsScreen() {
                     });
                     setNotes(latest.notes || '');
                     setPhotos(latest.photos || []);
+                } else if (active) {
+                    setEntryId(null);
+                    setMode('edit');
                 }
             })();
             return () => { active = false; };
-        }, [selectedDate])
+        }, [selectedDate, selectedProject?.name])
     );
 
     const pickImage = async () => {
@@ -97,9 +112,9 @@ export default function MetricsScreen() {
         try {
             const dateKey = getDateKey(selectedDate);
             await saveMetrics(dateKey, {
-                id: Date.now().toString(),
+                id: entryId ?? createUuid(),
                 project: selectedProject,
-                timestamp: new Date().toISOString(),
+                timestamp: getTimestampForReportingDay(selectedDate),
                 waterUsage: values.waterUsage || undefined,
                 acresCompleted: values.acresCompleted || undefined,
                 greenSpaceCompleted: values.greenSpaceCompleted || undefined,
@@ -108,7 +123,8 @@ export default function MetricsScreen() {
                 photos: photos.length > 0 ? photos : undefined,
             });
             setSuccess(true);
-            setTimeout(() => router.back(), 1200);
+            setMode('overview');
+            setTimeout(() => setSuccess(false), 1200);
         } catch {
             Alert.alert('Error', 'Failed to save metrics. Please try again.');
         } finally {
@@ -120,6 +136,63 @@ export default function MetricsScreen() {
         <View style={styles.container}>
             <ScreenHeader title="Daily Metrics" subtitle={dateLabel} />
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+                {mode === 'overview' && (
+                    <View style={styles.overviewCard}>
+                        <View style={styles.overviewHeader}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                                <View style={styles.overviewIconWrap}>
+                                    <Ionicons name="stats-chart-outline" size={18} color={COLORS.brand} />
+                                </View>
+                                <View>
+                                    <Text style={styles.overviewTitle}>Submitted metrics</Text>
+                                    <Text style={styles.overviewSub}>{selectedProject.name}</Text>
+                                </View>
+                            </View>
+                            <TouchableOpacity style={styles.editBtn} onPress={() => setMode('edit')} activeOpacity={0.85}>
+                                <Ionicons name="create-outline" size={16} color="#fff" />
+                                <Text style={styles.editBtnText}>Edit</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.overviewGrid}>
+                            {METRIC_FIELDS.map((f) => {
+                                const v = values[f.key]?.trim();
+                                if (!v) return null;
+                                return (
+                                    <View key={f.key} style={styles.overviewMetric}>
+                                        <View style={styles.overviewMetricTop}>
+                                            <Ionicons name={f.icon as any} size={14} color={COLORS.subtitle} />
+                                            <Text style={styles.overviewMetricLabel}>{f.label}</Text>
+                                        </View>
+                                        <Text style={styles.overviewMetricValue}>
+                                            {v}
+                                            <Text style={styles.overviewMetricUnit}> {f.unit}</Text>
+                                        </Text>
+                                    </View>
+                                );
+                            })}
+                        </View>
+
+                        {(notes?.trim() || photos.length > 0) && <View style={styles.overviewDivider} />}
+
+                        {notes?.trim() ? (
+                            <View style={styles.overviewMetaRow}>
+                                <Ionicons name="chatbox-ellipses-outline" size={14} color={COLORS.subtitle} />
+                                <Text style={styles.overviewMetaText} numberOfLines={3}>{notes.trim()}</Text>
+                            </View>
+                        ) : null}
+
+                        {photos.length > 0 ? (
+                            <View style={styles.overviewMetaRow}>
+                                <Ionicons name="images-outline" size={14} color={COLORS.subtitle} />
+                                <Text style={styles.overviewMetaText}>{photos.length} photo{photos.length !== 1 ? 's' : ''} attached</Text>
+                            </View>
+                        ) : null}
+                    </View>
+                )}
+
+                {mode === 'edit' && (
+                    <>
 
                 {/* Project display */}
                 <View style={styles.projectCard}>
@@ -192,6 +265,8 @@ export default function MetricsScreen() {
                         success ? <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.submitText}>Saved!</Text></> :
                             <Text style={styles.submitText}>Save Metrics</Text>}
                 </TouchableOpacity>
+                    </>
+                )}
             </ScrollView>
         </View>
     );
@@ -201,6 +276,22 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.surface },
     scroll: { flex: 1 },
     scrollContent: { padding: 16, paddingBottom: 48, gap: 16 },
+    overviewCard: { backgroundColor: COLORS.card, borderRadius: 18, padding: 16, gap: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+    overviewHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+    overviewIconWrap: { width: 34, height: 34, borderRadius: 12, backgroundColor: COLORS.brand + '18', alignItems: 'center', justifyContent: 'center' },
+    overviewTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    overviewSub: { color: COLORS.subtitle, fontSize: 12, marginTop: 2 },
+    overviewGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+    overviewMetric: { flexGrow: 1, flexBasis: '46%', backgroundColor: COLORS.surface, borderRadius: 14, padding: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
+    overviewMetricTop: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+    overviewMetricLabel: { color: COLORS.subtitle, fontSize: 12, fontWeight: '600' },
+    overviewMetricValue: { color: '#fff', fontSize: 18, fontWeight: '800' },
+    overviewMetricUnit: { color: COLORS.subtitle, fontSize: 12, fontWeight: '700' },
+    overviewDivider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginTop: 2 },
+    overviewMetaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    overviewMetaText: { color: COLORS.subtitle, fontSize: 13, lineHeight: 18, flex: 1 },
+    editBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12 },
+    editBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
     projectCard: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.card, borderRadius: 12, padding: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     projectText: { color: COLORS.subtitle, fontSize: 14 },
     metricCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },

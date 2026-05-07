@@ -27,16 +27,67 @@ export function getDateKey(date: Date): string {
     return `${y}-${m}-${d}`;
 }
 
+/** Interpret `YYYY-MM-DD` as a local calendar date (avoids UTC midnight parsing bugs). */
+export function parseDateKeyLocal(dateKey: string): Date {
+    const [ys, ms, ds] = dateKey.split('-');
+    const y = Number(ys);
+    const mo = Number(ms);
+    const d = Number(ds);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return new Date();
+    return new Date(y, mo - 1, d);
+}
+
+/**
+ * Wall-clock time anchored to the **selected reporting calendar day** (aligned with DB `logged_at`
+ * merging in sync). Use for new entries so timestamps always fall on the day being reported.
+ */
+export function getTimestampForReportingDay(reportDay: Date, wall: Date = new Date()): string {
+    const dateKey = getDateKey(reportDay);
+    const [ys, ms, ds] = dateKey.split('-');
+    const y = Number(ys);
+    const mo = Number(ms);
+    const d = Number(ds);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return wall.toISOString();
+    const merged = new Date(
+        y,
+        mo - 1,
+        d,
+        wall.getHours(),
+        wall.getMinutes(),
+        wall.getSeconds(),
+        wall.getMilliseconds(),
+    );
+    return merged.toISOString();
+}
+
+/** RFC4122-ish v4 UUID generator (no native crypto dependency). */
+export function createUuid(): string {
+    // eslint-disable-next-line no-bitwise
+    const s4 = () => (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
+    // eslint-disable-next-line no-bitwise
+    const s4a = () => (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
+    const a = s4() + s4();
+    const b = s4();
+    const c = '4' + s4().substring(1); // version 4
+    // eslint-disable-next-line no-bitwise
+    const d = (((8 + Math.random() * 4) | 0).toString(16) + s4a().substring(1)); // variant 8..b
+    const e = s4() + s4() + s4();
+    return `${a}-${b}-${c}-${d}-${e}`.toLowerCase();
+}
+
 export async function getReportDate(): Promise<Date> {
     try {
         const saved = await AsyncStorage.getItem('selectedDate');
-        if (saved) return new Date(saved);
+        if (!saved) return new Date();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(saved)) return parseDateKeyLocal(saved);
+        const parsed = new Date(saved);
+        if (!isNaN(parsed.getTime())) return parsed;
     } catch { }
     return new Date();
 }
 
 export async function setReportDate(date: Date): Promise<void> {
-    await AsyncStorage.setItem('selectedDate', date.toISOString());
+    await AsyncStorage.setItem('selectedDate', getDateKey(date));
 }
 
 export function formatReportDateLabel(date: Date): string {
@@ -82,7 +133,7 @@ export interface MetricsEntry {
 }
 
 export interface SurveyQuestionEntry {
-    id: number;
+    id: string;
     question: string;
     answer: 'N/A' | 'No' | 'Yes' | '';
     description: string;
@@ -229,34 +280,47 @@ async function appendEntry<T>(
     await writeArray(key, arr);
 }
 
+async function upsertEntryById<T extends { id: string }>(
+    keyFn: (d: string) => string,
+    dateKey: string,
+    entry: T
+): Promise<void> {
+    const key = keyFn(dateKey);
+    const arr = await readArray<T>(key);
+    const idx = arr.findIndex((item) => item.id === entry.id);
+    if (idx >= 0) arr[idx] = entry;
+    else arr.push(entry);
+    await writeArray(key, arr);
+}
+
 // --- Save Functions ---
 
 export async function saveNotes(dateKey: string, entry: NoteEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
-    await appendEntry(STORAGE_KEYS.notes, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.notes, dateKey, entry);
     syncNoteToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveChemicals(dateKey: string, entry: ChemicalEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
-    await appendEntry(STORAGE_KEYS.chemicals, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.chemicals, dateKey, entry);
     syncChemicalsToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveMetrics(dateKey: string, entry: MetricsEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
-    await appendEntry(STORAGE_KEYS.metrics, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.metrics, dateKey, entry);
     syncMetricsToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveSurvey(dateKey: string, entry: SurveyEntry): Promise<void> {
-    await appendEntry(STORAGE_KEYS.survey, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.survey, dateKey, entry);
     syncSurveyToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveEquipment(dateKey: string, entry: EquipmentEntry): Promise<void> {
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
-    await appendEntry(STORAGE_KEYS.equipment, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.equipment, dateKey, entry);
     syncEquipmentToSupabase(dateKey, entry).catch(console.error);
 }
 
@@ -267,7 +331,7 @@ export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promi
 
 export async function saveAttachments(dateKey: string, entry: AttachmentEntry): Promise<void> {
     if (entry.previews?.length) entry.previews = await uploadPhotosArray(entry.previews);
-    await appendEntry(STORAGE_KEYS.attachments, dateKey, entry);
+    await upsertEntryById(STORAGE_KEYS.attachments, dateKey, entry);
     syncAttachmentToSupabase(dateKey, entry).catch(console.error);
 }
 
@@ -278,7 +342,7 @@ export async function saveEquipmentChecklist(
     if (entry.photos?.length) entry.photos = await uploadPhotosArray(entry.photos);
     if (entry.signature) entry.signature = (await uploadImageToCloudinary(entry.signature)) || undefined;
     
-    await appendEntry(STORAGE_KEYS.equipment, dateKey, entry as unknown as EquipmentEntry);
+    await upsertEntryById(STORAGE_KEYS.equipment, dateKey, entry as unknown as EquipmentEntry);
     syncEquipmentChecklistToSupabase(dateKey, entry).catch(console.error);
 }
 
@@ -520,4 +584,58 @@ export async function hasDataForDate(dateKey: string): Promise<boolean> {
         observations.length > 0 ||
         incidents.length > 0
     );
+}
+
+function projectNameEquals(a: string | undefined, b: string | undefined): boolean {
+    if (!a?.trim() || !b?.trim()) return false;
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function equipmentEntryMatchesProject(entry: EquipmentOrChecklistEntry, projectName: string): boolean {
+    if ('type' in entry && entry.type === 'checklist' && entry.formData && typeof (entry.formData as Record<string, string>).siteName === 'string') {
+        return projectNameEquals((entry.formData as Record<string, string>).siteName, projectName);
+    }
+    if ('project' in entry && entry.project?.name) {
+        return projectNameEquals(entry.project.name, projectName);
+    }
+    return false;
+}
+
+/** Any saved logs or report draft/signature for this calendar day and project (local AsyncStorage). */
+export async function hasDataForDateForProject(dateKey: string, projectName: string): Promise<boolean> {
+    const pn = projectName.trim();
+    if (!pn) return false;
+
+    const [notes, chemicals, metrics, survey, equipment, attachments, material, observations, incidents] = await Promise.all([
+        getNotesForDate(dateKey),
+        getChemicalsForDate(dateKey),
+        getMetricsForDate(dateKey),
+        getSurveyForDate(dateKey),
+        getEquipmentForDate(dateKey),
+        getAttachmentsForDate(dateKey),
+        getMaterialForDate(dateKey),
+        getObservationsForDate(dateKey),
+        getIncidentsForDate(dateKey),
+    ]);
+
+    if (notes.some((n) => projectNameEquals(n.project?.name, pn))) return true;
+    if (chemicals.some((c) => projectNameEquals(c.project?.name, pn))) return true;
+    if (metrics.some((m) => projectNameEquals(m.project?.name, pn))) return true;
+    if (survey.some((s) => projectNameEquals(s.project?.name, pn))) return true;
+    if (equipment.some((e) => equipmentEntryMatchesProject(e, pn))) return true;
+    if (attachments.some((a) => projectNameEquals(a.project?.name, pn))) return true;
+    if (material.some((m) => projectNameEquals(m.project?.name, pn))) return true;
+    if (observations.some((o) => projectNameEquals(o.project?.name, pn))) return true;
+    if (incidents.some((i) => projectNameEquals(i.project?.name, pn))) return true;
+
+    const report = await getSignedReport(dateKey);
+    if (report && projectNameEquals(report.projectName, pn)) return true;
+
+    return false;
+}
+
+/** Local signed daily report for this project (isSigned true). */
+export async function isReportFullySignedForProject(dateKey: string, projectName: string): Promise<boolean> {
+    const s = await getSignedReport(dateKey);
+    return !!(s && projectNameEquals(s.projectName, projectName) && s.isSigned);
 }

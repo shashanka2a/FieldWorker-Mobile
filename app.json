@@ -55,7 +55,12 @@
           "cameraPermission": "Allow FieldWorker to access your camera."
         }
       ],
-      "expo-sharing",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "FieldWorker tags photos with GPS coordinates for site documentation."
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -63,7 +68,8 @@
             "buildReactNativeFromSource": false
           }
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": false

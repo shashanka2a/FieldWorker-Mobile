@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getDateKey } from '@/lib/dailyReportStorage';
+import { getDateKey, parseDateKeyLocal } from '@/lib/dailyReportStorage';
 import { supabase } from '@/lib/supabase';
 
 interface Project {
@@ -71,11 +71,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         // Load saved date from storage
         AsyncStorage.getItem('selectedDate').then((saved) => {
-            if (saved) {
-                const parsed = new Date(saved);
-                if (!isNaN(parsed.getTime())) {
-                    setSelectedDateState(parsed);
-                }
+            if (!saved) return;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(saved)) {
+                setSelectedDateState(parseDateKeyLocal(saved));
+                return;
+            }
+            const parsed = new Date(saved);
+            if (!isNaN(parsed.getTime())) {
+                setSelectedDateState(parsed);
+                AsyncStorage.setItem('selectedDate', getDateKey(parsed)).catch(() => {});
             }
         });
 
@@ -85,7 +89,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const setSelectedDate = async (date: Date) => {
         setSelectedDateState(date);
-        await AsyncStorage.setItem('selectedDate', date.toISOString());
+        await AsyncStorage.setItem('selectedDate', getDateKey(date));
     };
 
     const setSelectedProject = async (project: Project) => {
