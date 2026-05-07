@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "scheme": "fieldworker",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -28,7 +27,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1C1C1E"
       },
-      "edgeToEdgeEnabled": true,
+      "package": "com.shashankj02.fieldworkermobile",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
@@ -54,6 +53,15 @@
         "expo-camera",
         {
           "cameraPermission": "Allow FieldWorker to access your camera."
+        }
+      ],
+      "expo-sharing",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "buildReactNativeFromSource": false
+          }
         }
       ]
     ],
