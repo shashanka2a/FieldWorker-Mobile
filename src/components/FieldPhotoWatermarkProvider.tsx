@@ -251,14 +251,14 @@ export function FieldPhotoWatermarkProvider({ children }: { children: React.Reac
                             <Text style={[styles.line, { fontSize }]} numberOfLines={1}>
                                 {job.gpsLine}
                             </Text>
-                            <Text style={[styles.line, { fontSize }]} numberOfLines={2}>
-                                {job.takenLine}
-                            </Text>
                             {job.addressLine ? (
                                 <Text style={[styles.lineMuted, { fontSize: fontSize - 1 }]} numberOfLines={3}>
                                     {job.addressLine}
                                 </Text>
                             ) : null}
+                            <Text style={[styles.line, { fontSize }]} numberOfLines={2}>
+                                {job.takenLine}
+                            </Text>
                         </View>
                     </View>
                 </View>
@@ -280,7 +280,7 @@ const styles = StyleSheet.create({
         left: 0,
         bottom: 0,
         maxWidth: '96%',
-        backgroundColor: 'rgba(0,0,0,0.88)',
+        backgroundColor: 'rgba(0,0,0,0.52)',
         borderRadius: 10,
         overflow: 'hidden',
         flexDirection: 'column',
@@ -289,16 +289,16 @@ const styles = StyleSheet.create({
     line: {
         color: '#fff',
         fontWeight: '600',
-        textShadowColor: 'rgba(0,0,0,0.65)',
+        textShadowColor: 'rgba(0,0,0,0.35)',
         textShadowOffset: { width: 0, height: 1 },
-        textShadowRadius: 3,
+        textShadowRadius: 2,
     },
     lineMuted: {
-        color: '#E8E8ED',
-        marginTop: 4,
+        color: '#F2F2F7',
+        marginTop: 2,
         fontWeight: '500',
-        textShadowColor: 'rgba(0,0,0,0.65)',
+        textShadowColor: 'rgba(0,0,0,0.35)',
         textShadowOffset: { width: 0, height: 1 },
-        textShadowRadius: 3,
+        textShadowRadius: 2,
     },
 });

@@ -12,11 +12,21 @@ export function getReportDashboardBaseUrl(): string {
     return (raw || DEFAULT_BASE).replace(/\/+$/, '');
 }
 
-export function buildDailyReportDashboardUrl(dateKey: string, projectName: string): string {
+export function buildDailyReportDashboardUrl(
+    dateKey: string,
+    projectName: string,
+    preparedBy?: string
+): string {
     const base = getReportDashboardBaseUrl();
     const params = new URLSearchParams();
     params.set('date', dateKey);
     params.set('project', projectName);
+    const pb = (preparedBy ?? '').trim();
+    if (pb) {
+        // Support both common naming conventions on the dashboard side.
+        params.set('preparedBy', pb);
+        params.set('prepared_by', pb);
+    }
     return `${base}/reports/daily?${params.toString()}`;
 }
 

@@ -12,7 +12,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import {
-    getSafetyTalks,
+    getTalkById,
     addScheduledSafetyTalk,
     updateScheduledSafetyTalk,
     deleteScheduledSafetyTalk,
@@ -20,6 +20,7 @@ import {
 } from '@/lib/safetyStorage';
 import { getTemplateById, SAFETY_TEMPLATES, type SafetyTemplate } from '@/lib/safetyTemplates';
 import { fetchSafetyTalkTemplatesFromSupabase } from '@/lib/supabaseSync';
+import { useAppContext } from '@/context/AppContext';
 
 const COLORS = {
     brand: '#FF6633',
@@ -39,6 +40,7 @@ function formatDateKey(date: Date): string {
 }
 
 export default function SafetyScheduleScreen() {
+    const { selectedProject } = useAppContext();
     const { id, templateId: paramTemplateId, templateName: paramTemplateName } =
         useLocalSearchParams<{ id?: string; templateId?: string; templateName?: string }>();
 
@@ -57,8 +59,7 @@ export default function SafetyScheduleScreen() {
     useEffect(() => {
         if (id) {
             setLoading(true);
-            getSafetyTalks().then((talks) => {
-                const found = talks.find((t) => t.id === id);
+            getTalkById(id).then((found) => {
                 if (found) {
                     setTalk(found);
                     setSelectedTemplateId(found.templateId);
@@ -101,15 +102,35 @@ export default function SafetyScheduleScreen() {
             Alert.alert('Required', 'Please select a safety talk template.');
             return;
         }
+        if (!selectedProject.id) {
+            Alert.alert(
+                'Select a project',
+                'Choose a field project from the app home screen before scheduling a safety talk.'
+            );
+            return;
+        }
         const templateName = selectedTemplate?.name ?? paramTemplateName ?? '';
         const dateKey = formatDateKey(selectedDate);
 
         setSubmitting(true);
         try {
             if (id && talk) {
-                await updateScheduledSafetyTalk(id, dateKey, selectedTemplateId, templateName);
+                await updateScheduledSafetyTalk(
+                    id,
+                    dateKey,
+                    selectedTemplateId,
+                    templateName,
+                    selectedProject.id,
+                    selectedProject.name
+                );
             } else {
-                await addScheduledSafetyTalk(dateKey, selectedTemplateId, templateName);
+                await addScheduledSafetyTalk(
+                    dateKey,
+                    selectedTemplateId,
+                    templateName,
+                    selectedProject.id,
+                    selectedProject.name
+                );
             }
             router.back();
         } catch {

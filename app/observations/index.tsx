@@ -21,6 +21,7 @@ import {
     deleteObservation,
     ObservationEntry,
 } from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchObservationsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
@@ -71,8 +72,10 @@ export default function ObservationsListScreen() {
             selectedProject?.id ?? '',
             selectedProject?.name ?? ''
         );
-        const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
-        setObservations(data.reverse());
+        const pred = matchProjectPredicate<ObservationEntry>(selectedProject?.name);
+        const merged = mergeLocalRemotePreferSupabase(localData, remoteData, pred);
+        merged.sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
+        setObservations(merged.reverse());
     }, [selectedDate, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadObservations(); }, [loadObservations]));

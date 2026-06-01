@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
     View,
     Text,
@@ -12,14 +12,17 @@ import {
     Modal,
     Pressable,
 } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
 import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
-import { createUuid, getDateKey, getTimestampForReportingDay, saveChemicals, getChemicalsForDate, ChemicalEntry } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getSubmittedAtIso, saveChemicals, getChemicalsForDate, ChemicalEntry } from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchChemicalsFromSupabase, fetchCompanyChemicalPresetsFromSupabase } from '@/lib/supabaseSync';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -61,6 +64,8 @@ function getWarning(name: string, quantity: string, unit: string): string | null
 export default function ChemicalsScreen() {
     const { selectedDate, selectedProject } = useAppContext();
     const { applyCameraWatermark } = useFieldPhotoWatermark();
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const projectKey = (selectedProject?.id || selectedProject?.name || 'project').replace(/\s+/g, '_');
     const [activeType, setActiveType] = useState<ApplicationType | null>(null);
     const [chemicals, setChemicals] = useState<Chemical[]>(DEFAULT_CHEMICALS.map(c => ({ ...c })));
     const [presetsByType, setPresetsByType] = useState<Record<ApplicationType, { name: string; unit: string }[]>>({
@@ -79,6 +84,13 @@ export default function ChemicalsScreen() {
         spraying: null,
         wicking: null,
     });
+    const [chemicalsFocusReady, setChemicalsFocusReady] = useState(false);
+    const chemicalsDraftKey = useMemo(
+        () => `fw_draft_chemicals_${dateKey}_${projectKey}_${activeType ?? '__'}`,
+        [dateKey, projectKey, activeType]
+    );
+    const modeRef = useRef(mode);
+    modeRef.current = mode;
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -136,41 +148,49 @@ export default function ChemicalsScreen() {
     useFocusEffect(
         React.useCallback(() => {
             let active = true;
+            setChemicalsFocusReady(false);
             (async () => {
-                const [sprayingPresets, wickingPresets] = await Promise.all([
-                    fetchCompanyChemicalPresetsFromSupabase('spraying'),
-                    fetchCompanyChemicalPresetsFromSupabase('wicking'),
-                ]);
-                if (active) {
-                    setPresetsByType({
-                        spraying: sprayingPresets,
-                        wicking: wickingPresets,
-                    });
-                }
+                try {
+                    const [sprayingPresets, wickingPresets] = await Promise.all([
+                        fetchCompanyChemicalPresetsFromSupabase('spraying'),
+                        fetchCompanyChemicalPresetsFromSupabase('wicking'),
+                    ]);
+                    if (active) {
+                        setPresetsByType({
+                            spraying: sprayingPresets,
+                            wicking: wickingPresets,
+                        });
+                    }
 
-                const dateKey = getDateKey(selectedDate);
-                const localData = await getChemicalsForDate(dateKey);
-                const remoteData = await fetchChemicalsFromSupabase(
-                    dateKey,
-                    selectedDate,
-                    selectedProject?.id ?? '',
-                    selectedProject?.name ?? ''
-                );
-                const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
-                if (!active) return;
+                    const localData = await getChemicalsForDate(dateKey);
+                    const remoteData = await fetchChemicalsFromSupabase(
+                        dateKey,
+                        selectedDate,
+                        selectedProject?.id ?? '',
+                        selectedProject?.name ?? ''
+                    );
+                    const data = mergeLocalRemotePreferSupabase(
+                        localData,
+                        remoteData,
+                        matchProjectPredicate<ChemicalEntry>(selectedProject?.name)
+                    );
+                    if (!active) return;
 
-                const sorted = [...data].sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
-                const latestSpraying = [...sorted].reverse().find((e) => e.applicationType === 'spraying') ?? null;
-                const latestWicking = [...sorted].reverse().find((e) => e.applicationType === 'wicking') ?? null;
-                setSubmittedByType({ spraying: latestSpraying, wicking: latestWicking });
+                    const sorted = [...data].sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
+                    const latestSpraying = [...sorted].reverse().find((e) => e.applicationType === 'spraying') ?? null;
+                    const latestWicking = [...sorted].reverse().find((e) => e.applicationType === 'wicking') ?? null;
+                    setSubmittedByType({ spraying: latestSpraying, wicking: latestWicking });
 
-                if (mode === 'choose') {
-                    setActiveType(null);
-                    setEntryId(null);
+                    if (modeRef.current === 'choose') {
+                        setActiveType(null);
+                        setEntryId(null);
+                    }
+                } finally {
+                    if (active) setChemicalsFocusReady(true);
                 }
             })();
             return () => { active = false; };
-        }, [selectedDate, selectedProject?.name])
+        }, [dateKey, selectedDate, selectedProject?.id, selectedProject?.name])
     );
 
     const updateChemical = (index: number, field: keyof Chemical, value: string) => {
@@ -182,6 +202,51 @@ export default function ChemicalsScreen() {
     };
 
     // Custom chemicals are intentionally disabled (company presets only).
+
+    const chemicalsDraftSnapshot = useMemo(
+        () => JSON.stringify({ chemicals, notes, photos }),
+        [chemicals, notes, photos]
+    );
+
+    useFormDraft({
+        storageKey: chemicalsDraftKey,
+        active: chemicalsFocusReady && mode === 'edit' && activeType !== null,
+        snapshotJson: chemicalsDraftSnapshot,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as Record<string, unknown>;
+            if (typeof p.notes === 'string') setNotes(p.notes);
+            if (Array.isArray(p.photos)) {
+                setPhotos(p.photos.filter((x): x is string => typeof x === 'string'));
+            }
+            if (!Array.isArray(p.chemicals)) return;
+            const draftRows = p.chemicals.filter(
+                (c): c is Chemical =>
+                    !!c &&
+                    typeof c === 'object' &&
+                    typeof (c as Chemical).name === 'string' &&
+                    typeof (c as Chemical).quantity === 'string' &&
+                    typeof (c as Chemical).unit === 'string'
+            );
+            if (draftRows.length === 0) return;
+            setChemicals((cur) =>
+                cur.map((c, i) => {
+                    const byName = draftRows.find(
+                        (d) => d.name.trim().toLowerCase() === c.name.trim().toLowerCase()
+                    );
+                    const d = byName ?? draftRows[i];
+                    if (!d) return c;
+                    return { ...c, quantity: d.quantity, unit: d.unit };
+                })
+            );
+        },
+        isNonEmpty: () =>
+            !!(
+                chemicals.some((c) => c.quantity.trim() !== '') ||
+                notes.trim() ||
+                photos.length > 0
+            ),
+    });
 
     const pickImage = async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -209,17 +274,18 @@ export default function ChemicalsScreen() {
         }
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
+            const draftKeyToClear = chemicalsDraftKey;
             const saved: ChemicalEntry = {
                 id: entryId ?? createUuid(),
                 project: selectedProject,
-                timestamp: getTimestampForReportingDay(selectedDate),
+                timestamp: getSubmittedAtIso(),
                 applicationType: activeType,
                 chemicals: chemicals.map((c) => ({ name: c.name, quantity: c.quantity, unit: c.unit })),
                 notes: notes.trim() || undefined,
                 photos: photos.length > 0 ? photos : undefined,
             };
             await saveChemicals(dateKey, saved);
+            await clearFormDraft(draftKeyToClear);
             setSuccess(true);
             setSubmittedByType((prev) => ({ ...prev, [activeType]: saved }));
             setTimeout(() => setSuccess(false), 800);
@@ -246,7 +312,7 @@ export default function ChemicalsScreen() {
     return (
         <View style={styles.container}>
             <ScreenHeader title="Chemicals" subtitle={dateLabel} />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <KeyboardAwareScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 {mode === 'choose' && (
                     <>
                         {(['spraying', 'wicking'] as ApplicationType[]).map((t) => {
@@ -325,19 +391,21 @@ export default function ChemicalsScreen() {
                 {chemicals.map((chem, idx) => {
                     const warning = getWarning(chem.name, chem.quantity, chem.unit);
                     return (
-                        <View key={idx} style={styles.chemRow}>
+                        <KeyboardField key={idx} style={styles.chemRow}>
                             <View style={styles.chemHeader}>
                                 <Text style={styles.chemName}>{chem.name}</Text>
                             </View>
                             <View style={styles.chemInputRow}>
-                                <TextInput
-                                    style={[styles.qtyInput, warning ? styles.qtyInputWarning : null]}
-                                    value={chem.quantity}
-                                    onChangeText={(v) => updateChemical(idx, 'quantity', v)}
-                                    placeholder="0.0"
-                                    placeholderTextColor={COLORS.subtitle}
-                                    keyboardType="decimal-pad"
-                                />
+                                <ScrollInputField style={{ flex: 1 }}>
+                                    <TextInput
+                                        style={[styles.qtyInput, warning ? styles.qtyInputWarning : null]}
+                                        value={chem.quantity}
+                                        onChangeText={(v) => updateChemical(idx, 'quantity', v)}
+                                        placeholder="0.0"
+                                        placeholderTextColor={COLORS.subtitle}
+                                        keyboardType="decimal-pad"
+                                    />
+                                </ScrollInputField>
                                 <TouchableOpacity
                                     style={styles.unitSelectDrop}
                                     onPress={() => setShowUnitPicker(idx)}
@@ -352,24 +420,26 @@ export default function ChemicalsScreen() {
                                     <Text style={styles.warningText}>{warning}</Text>
                                 </View>
                             )}
-                        </View>
+                        </KeyboardField>
                     );
                 })}
 
                 {/* Notes */}
-                <View style={styles.field}>
+                <KeyboardField style={styles.field}>
                     <Text style={styles.label}>Notes (optional)</Text>
-                    <TextInput
-                        style={styles.textArea}
-                        value={notes}
-                        onChangeText={setNotes}
-                        placeholder="Additional notes..."
-                        placeholderTextColor={COLORS.subtitle}
-                        multiline
-                        numberOfLines={3}
-                        textAlignVertical="top"
-                    />
-                </View>
+                    <ScrollInputField>
+                        <TextInput
+                            style={styles.textArea}
+                            value={notes}
+                            onChangeText={setNotes}
+                            placeholder="Additional notes..."
+                            placeholderTextColor={COLORS.subtitle}
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                        />
+                    </ScrollInputField>
+                </KeyboardField>
 
                 {/* Photos */}
                 <View style={styles.photoRow}>
@@ -406,7 +476,7 @@ export default function ChemicalsScreen() {
                 </TouchableOpacity>
                     </>
                 )}
-            </ScrollView>
+            </KeyboardAwareScrollView>
 
             {/* Unit Picker Modal */}
             <Modal visible={showUnitPicker !== null} transparent animationType="slide" onRequestClose={() => setShowUnitPicker(null)}>

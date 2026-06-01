@@ -14,8 +14,8 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { getDateKey, getAttachmentsForDate, AttachmentEntry } from '@/lib/dailyReportStorage';
-import { fetchAttachmentsFromSupabase } from '@/lib/supabaseSync';
+import { AttachmentEntry, getDateKey } from '@/lib/dailyReportStorage';
+import { attachmentHasCloudinaryUrls, loadAttachmentsFromDatabase } from '@/lib/attachmentsLoad';
 
 const COLORS = {
     brand: '#FF6633',
@@ -27,94 +27,6 @@ const COLORS = {
 
 const WIN = Dimensions.get('window');
 
-function normalizeProjectName(name: string | undefined): string {
-    return (name ?? '').trim().toLowerCase();
-}
-
-/** Exact match on filenames + notes + day (when names align across local/remote). */
-function attachmentLogicalKey(e: AttachmentEntry): string {
-    const dayKey = getDateKey(new Date(e.timestamp));
-    const names = [...(e.fileNames ?? [])]
-        .map((n) => n.trim())
-        .filter(Boolean)
-        .sort()
-        .join('|');
-    const notes = (e.notes ?? '').trim();
-    return `${normalizeProjectName(e.project?.name)}\x01${dayKey}\x01${names}\x01${notes}`;
-}
-
-/** Same image often differs by http/https or casing — compare paths only. */
-function normalizeComparableUploadUrl(p: string): string {
-    let s = p.trim().split('?')[0].trim().toLowerCase();
-    s = s.replace(/^https?:\/\//, '');
-    return s;
-}
-
-/**
- * 4-hour block within the local calendar day — aligns local `timestamp` vs Supabase `logged_at` even when
- * they skew by an hour or more.
- */
-function attachmentSlotKey(e: AttachmentEntry): string {
-    const d = new Date(e.timestamp);
-    const dayKey = getDateKey(d);
-    const minutesFromMidnight = d.getHours() * 60 + d.getMinutes();
-    const block = Math.floor(minutesFromMidnight / 240);
-    const count = Math.max((e.fileNames ?? []).length, (e.previews ?? []).length, 1);
-    const notes = (e.notes ?? '').trim();
-    return `${normalizeProjectName(e.project?.name)}\x01${dayKey}\x01${block}\x01${count}\x01${notes}`;
-}
-
-function allStableCloudinaryUrls(e: AttachmentEntry): string[] {
-    return [
-        ...new Set(
-            (e.previews ?? [])
-                .filter((p): p is string => typeof p === 'string' && /cloudinary/i.test(p))
-                .map((p) => normalizeComparableUploadUrl(p))
-        ),
-    ].sort();
-}
-
-function hasCloudinaryPreview(e: AttachmentEntry): boolean {
-    return allStableCloudinaryUrls(e).length > 0;
-}
-
-/** Collapse duplicate rows in one list (e.g. repeated Cloudinary URLs from double-insert). */
-function dedupeAttachmentRows(list: AttachmentEntry[]): AttachmentEntry[] {
-    const sorted = [...list].sort((a, b) => {
-        const ac = hasCloudinaryPreview(a) ? 1 : 0;
-        const bc = hasCloudinaryPreview(b) ? 1 : 0;
-        if (ac !== bc) return bc - ac;
-        return +new Date(b.timestamp) - +new Date(a.timestamp);
-    });
-    const seenUrl = new Set<string>();
-    const seenStrict = new Set<string>();
-    const seenSlot = new Set<string>();
-    const out: AttachmentEntry[] = [];
-
-    for (const e of sorted) {
-        const urls = allStableCloudinaryUrls(e);
-        if (urls.length > 0) {
-            if (urls.some((u) => seenUrl.has(u))) continue;
-            urls.forEach((u) => seenUrl.add(u));
-            seenSlot.add(attachmentSlotKey(e));
-            seenStrict.add(attachmentLogicalKey(e));
-            out.push(e);
-            continue;
-        }
-
-        if (seenSlot.has(attachmentSlotKey(e))) continue;
-
-        const strict = attachmentLogicalKey(e);
-        if (seenStrict.has(strict)) continue;
-
-        seenSlot.add(attachmentSlotKey(e));
-        seenStrict.add(strict);
-        out.push(e);
-    }
-
-    return out.sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp));
-}
-
 export default function AttachmentsScreen() {
     const { selectedDate, selectedProject } = useAppContext();
     const [entries, setEntries] = useState<AttachmentEntry[]>([]);
@@ -125,24 +37,14 @@ export default function AttachmentsScreen() {
 
     const loadData = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const [localData, remoteData] = await Promise.all([
-            getAttachmentsForDate(dateKey),
-            fetchAttachmentsFromSupabase(
-                dateKey,
-                selectedDate,
-                selectedProject?.id ?? '',
-                selectedProject?.name ?? ''
-            ),
-        ]);
-        const matchProject = (d: AttachmentEntry) =>
-            normalizeProjectName(d.project?.name) === normalizeProjectName(selectedProject?.name);
-        const localFiltered = localData.filter(matchProject);
-        const remoteFiltered = remoteData.filter(matchProject);
-
-        // Single source: no merge. Prefer Supabase when it returns anything for this day/project; else device queue only.
-        const rows = remoteFiltered.length > 0 ? remoteFiltered : localFiltered;
-        setEntries(dedupeAttachmentRows(rows));
-    }, [selectedDate, selectedProject?.name]);
+        const rows = await loadAttachmentsFromDatabase(
+            dateKey,
+            selectedDate,
+            selectedProject?.id ?? '',
+            selectedProject?.name ?? ''
+        );
+        setEntries(rows.filter(attachmentHasCloudinaryUrls));
+    }, [selectedDate, selectedProject?.id, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
@@ -154,7 +56,7 @@ export default function AttachmentsScreen() {
 
     return (
         <View style={styles.container}>
-            <ScreenHeader title="Attachments" subtitle={dateLabel} />
+            <ScreenHeader title="Attachments" subtitle={`${selectedProject.name} · ${dateLabel}`} />
             <ScrollView
                 style={styles.scroll}
                 contentContainerStyle={styles.scrollContent}
@@ -166,7 +68,9 @@ export default function AttachmentsScreen() {
                             <Ionicons name="camera-outline" size={40} color={COLORS.brand} />
                         </View>
                         <Text style={styles.emptyTitle}>No Attachments</Text>
-                        <Text style={styles.emptySubtitle}>Tap the button below to attach photos or files for {dateLabel}</Text>
+                        <Text style={styles.emptySubtitle}>
+                            Tap the button below to attach photos or files for {dateLabel}
+                        </Text>
                         <TouchableOpacity style={styles.emptyBtn} onPress={() => router.push('/attachments/add')}>
                             <Ionicons name="add" size={18} color="#fff" />
                             <Text style={styles.emptyBtnText}>Add Attachment</Text>
@@ -181,32 +85,30 @@ export default function AttachmentsScreen() {
                                 </View>
                                 <View style={styles.cardInfo}>
                                     <Text style={styles.cardTitle}>{entry.fileNames.length} file{entry.fileNames.length !== 1 ? 's' : ''}</Text>
-                                    <Text style={styles.cardTime}>{new Date(entry.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</Text>
+                                    <Text style={styles.cardTime}>
+                                        Saved{' '}
+                                        {new Date(entry.timestamp).toLocaleString('en-US', {
+                                            month: 'short',
+                                            day: 'numeric',
+                                            year: 'numeric',
+                                            hour: 'numeric',
+                                            minute: '2-digit',
+                                        })}
+                                    </Text>
                                 </View>
                             </View>
-                            {entry.notes && <Text style={styles.cardNotes}>{entry.notes}</Text>}
-                            {entry.previews && entry.previews.length > 0 ? (
-                                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                                    {entry.previews.map((uri, i) => (
-                                        <TouchableOpacity
-                                            key={`${entry.id}-${i}`}
-                                            activeOpacity={0.85}
-                                            onPress={() => setPreviewUri(uri)}
-                                        >
-                                            <Image source={{ uri }} style={styles.preview} />
-                                        </TouchableOpacity>
-                                    ))}
-                                </ScrollView>
-                            ) : (
-                                <View style={styles.fileList}>
-                                    {entry.fileNames.map((name, i) => (
-                                        <View key={i} style={styles.fileRow}>
-                                            <Ionicons name="document-outline" size={14} color={COLORS.subtitle} />
-                                            <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            )}
+                            {entry.notes ? <Text style={styles.cardNotes}>{entry.notes}</Text> : null}
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                                {(entry.previews ?? []).map((uri, i) => (
+                                    <TouchableOpacity
+                                        key={`${entry.id}-${i}`}
+                                        activeOpacity={0.85}
+                                        onPress={() => setPreviewUri(uri)}
+                                    >
+                                        <Image source={{ uri }} style={styles.preview} />
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
                         </View>
                     ))
                 )}

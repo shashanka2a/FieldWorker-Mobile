@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
     View,
     Text,
@@ -18,7 +18,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
 import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
-import { createUuid, getDateKey, getTimestampForReportingDay, saveAttachments } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getSubmittedAtIso, saveAttachments } from '@/lib/dailyReportStorage';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -47,6 +49,25 @@ export default function AddAttachmentsScreen() {
     const [previewUri, setPreviewUri] = useState<string | null>(null);
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const projectKey = (selectedProject?.id || selectedProject?.name || 'project').replace(/\s+/g, '_');
+    const draftKey = useMemo(
+        () => `fw_draft_attachments_${dateKey}_${projectKey}`,
+        [dateKey, projectKey]
+    );
+    const attachmentNotesDraft = useMemo(() => JSON.stringify({ notes }), [notes]);
+
+    useFormDraft({
+        storageKey: draftKey,
+        active: true,
+        snapshotJson: attachmentNotesDraft,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as Record<string, unknown>;
+            if (typeof p.notes === 'string') setNotes(p.notes);
+        },
+        isNonEmpty: () => !!notes.trim(),
+    });
 
     const pickImages = async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -89,21 +110,28 @@ export default function AddAttachmentsScreen() {
             Alert.alert('Required', 'Please add at least one photo or file.');
             return;
         }
+        const projectId = selectedProject?.id?.trim() ?? '';
+        const projectName = selectedProject?.name?.trim() ?? '';
+        if (!projectName || projectName === 'No Project Selected' || !projectId) {
+            Alert.alert('Select a project', 'Choose a field project on the Home tab before saving attachments.');
+            return;
+        }
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
             await saveAttachments(dateKey, {
                 id: createUuid(),
-                project: selectedProject,
-                timestamp: getTimestampForReportingDay(selectedDate),
+                project: { id: projectId, name: projectName },
+                timestamp: getSubmittedAtIso(),
                 fileNames: files.map((f) => f.name),
                 notes: notes.trim() || undefined,
                 previews: files.filter((f) => f.type === 'image').map((f) => f.uri),
             });
+            await clearFormDraft(draftKey);
             setSuccess(true);
             setTimeout(() => router.back(), 1200);
-        } catch {
-            Alert.alert('Error', 'Failed to save attachments. Please try again.');
+        } catch (e) {
+            const message = e instanceof Error ? e.message : 'Failed to save attachments. Please try again.';
+            Alert.alert('Could not save', message);
         } finally {
             setSubmitting(false);
         }
@@ -112,7 +140,10 @@ export default function AddAttachmentsScreen() {
     return (
         <View style={styles.container}>
             <ScreenHeader title="Add Attachments" subtitle={dateLabel} />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <KeyboardAwareScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+                <Text style={styles.reportDayHint}>
+                    Attachments are filed under the report day on the home calendar (shown above), not necessarily the day the photo was taken.
+                </Text>
 
                 {/* Action Buttons */}
                 <View style={styles.actionRow}>
@@ -163,19 +194,21 @@ export default function AddAttachmentsScreen() {
                 )}
 
                 {/* Notes */}
-                <View style={styles.field}>
+                <KeyboardField style={styles.field}>
                     <Text style={styles.label}>Notes (optional)</Text>
-                    <TextInput
-                        style={styles.textArea}
-                        value={notes}
-                        onChangeText={setNotes}
-                        placeholder="Describe these attachments..."
-                        placeholderTextColor={COLORS.subtitle}
-                        multiline
-                        numberOfLines={3}
-                        textAlignVertical="top"
-                    />
-                </View>
+                    <ScrollInputField>
+                        <TextInput
+                            style={styles.textArea}
+                            value={notes}
+                            onChangeText={setNotes}
+                            placeholder="Describe these attachments..."
+                            placeholderTextColor={COLORS.subtitle}
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                        />
+                    </ScrollInputField>
+                </KeyboardField>
 
                 <TouchableOpacity
                     style={[styles.submitBtn, (submitting || success || files.length === 0) && { opacity: 0.7 }]}
@@ -186,7 +219,7 @@ export default function AddAttachmentsScreen() {
                         success ? <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.submitText}>Saved!</Text></> :
                             <Text style={styles.submitText}>Save Attachments ({files.length})</Text>}
                 </TouchableOpacity>
-            </ScrollView>
+            </KeyboardAwareScrollView>
 
             <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri(null)}>
                 <View style={styles.lightboxBackdrop}>
@@ -210,6 +243,7 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.surface },
     scroll: { flex: 1 },
     scrollContent: { padding: 16, paddingBottom: 48, gap: 16 },
+    reportDayHint: { color: COLORS.subtitle, fontSize: 13, lineHeight: 18 },
     actionRow: { flexDirection: 'row', gap: 12 },
     actionBtn: { flex: 1, backgroundColor: COLORS.card, borderRadius: 18, padding: 20, alignItems: 'center', gap: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     actionIcon: { width: 56, height: 56, borderRadius: 16, backgroundColor: COLORS.brand + '20', alignItems: 'center', justifyContent: 'center' },

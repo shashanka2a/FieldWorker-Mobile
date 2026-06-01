@@ -1,13 +1,17 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Image, Alert, Linking } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '@/context/AppContext';
 import { buildDailyReportDashboardUrl } from '@/lib/reportDashboardUrl';
-import { getReportForDate, ReportData, getDateKey, parseDateKeyLocal, saveUnsignedReport } from '@/lib/dailyReportStorage';
+import { patchDashboardReportHtml, fetchDashboardReportHtmlForExport } from '@/lib/reportDashboardHtml';
+import { getReportForDate, ReportData, getDateKey, parseDateKeyLocal, saveUnsignedReport, resyncSignedReportToSupabaseIfPresent } from '@/lib/dailyReportStorage';
 import { generateReportPdf } from '@/lib/reportPdf';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const C = {
     brand: '#FF6633',
@@ -19,7 +23,7 @@ const C = {
 };
 
 export default function ReportPreviewScreen() {
-    const { selectedDate, setSelectedDate, selectedProject } = useAppContext();
+    const { selectedDate, setSelectedDate, selectedProject, currentUser } = useAppContext();
     const { date: dateParam } = useLocalSearchParams<{ date?: string }>();
     const insets = useSafeAreaInsets();
 
@@ -27,6 +31,11 @@ export default function ReportPreviewScreen() {
     const [localLoading, setLocalLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
     const [webLoading, setWebLoading] = useState(true);
+    const [dashboardHtml, setDashboardHtml] = useState<string | null>(null);
+    const [dashboardBaseUrl, setDashboardBaseUrl] = useState<string | undefined>(undefined);
+    const [downloading, setDownloading] = useState(false);
+    /** Avoid duplicate resync spam when parent re-renders with same date + project. */
+    const signedResyncKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
         if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return;
@@ -41,6 +50,7 @@ export default function ReportPreviewScreen() {
             selectedProject.name,
             selectedProject.address,
             selectedProject.zipcode,
+            { projectId: selectedProject.id },
         );
         setReport(data);
         setLocalLoading(false);
@@ -53,10 +63,34 @@ export default function ReportPreviewScreen() {
 
     const dateKey = getDateKey(selectedDate);
 
+    useEffect(() => {
+        signedResyncKeyRef.current = null;
+    }, [dateKey, selectedProject.id]);
+
+    useEffect(() => {
+        if (localLoading || !report?.signed?.isSigned) return;
+        const pid = selectedProject.id?.trim();
+        if (!pid || selectedProject.name === 'No Project Selected') return;
+
+        const key = `${dateKey}|${pid}`;
+        if (signedResyncKeyRef.current === key) return;
+        signedResyncKeyRef.current = key;
+
+        void resyncSignedReportToSupabaseIfPresent(dateKey, {
+            id: selectedProject.id,
+            name: selectedProject.name,
+        }).then((r) => {
+            if (r && !r.ok) {
+                console.warn('[ReportPreview] signed report cloud resync failed:', r.error);
+            }
+        });
+    }, [localLoading, report?.signed?.isSigned, dateKey, selectedProject.id, selectedProject.name]);
+
     const dashboardUri = useMemo(() => {
         if (!dashboardAvailable) return null;
-        return buildDailyReportDashboardUrl(dateKey, selectedProject.name);
-    }, [dashboardAvailable, dateKey, selectedProject.name]);
+        const pb = (report?.signed?.preparedBy || currentUser.name || '').trim();
+        return buildDailyReportDashboardUrl(dateKey, selectedProject.name, pb || undefined);
+    }, [dashboardAvailable, dateKey, selectedProject.name, currentUser.name, report?.signed?.preparedBy]);
 
     useEffect(() => {
         if (dashboardUri) setWebLoading(true);
@@ -72,14 +106,22 @@ export default function ReportPreviewScreen() {
         try {
             const unsignedReportUrl = await generateReportPdf(report, false);
 
-            await saveUnsignedReport(dateKey, {
+            const syncRes = await saveUnsignedReport(dateKey, {
                 reportDate: dateKey,
-                preparedBy: report.signed?.preparedBy || 'Draft',
+                preparedBy: report.signed?.preparedBy || currentUser.name || 'Draft',
                 projectName: selectedProject.name,
+                projectId: selectedProject.id?.trim() || undefined,
                 unsignedReportUrl: unsignedReportUrl || undefined,
                 isSigned: false,
             });
-            alert('Unsigned report synced to cloud!');
+            if (!syncRes.ok) {
+                Alert.alert(
+                    'Cloud sync failed',
+                    `${syncRes.error}\n\nYour device saved a draft, but Supabase did not update. Check you are signed in, the project is selected, and RLS allows INSERT/UPDATE on daily_signed_reports.`,
+                );
+                return;
+            }
+            Alert.alert('Success', 'Unsigned report synced to cloud.');
             loadReport();
         } catch (e) {
             console.error(e);
@@ -89,7 +131,117 @@ export default function ReportPreviewScreen() {
         }
     };
 
-    const isSigned = !!report?.signed;
+    const isSigned = report?.signed?.isSigned === true;
+    const signedInfo = report?.signed ?? null;
+    const signedReportUrl = signedInfo?.reportUrl ?? null;
+
+    /** PDF matches the on-screen dashboard preview (not the separate declaration PDF). */
+    const handleDownloadReport = useCallback(async () => {
+        if (!dashboardUri) {
+            Alert.alert('Not available', 'Select a project to export the report.');
+            return;
+        }
+        try {
+            setDownloading(true);
+
+            const patchParams = {
+                preparedBy: (signedInfo?.preparedBy || currentUser.name || '').trim(),
+                isSignedWithSignature: !!(isSigned && signedInfo?.signatureDataUrl),
+                signatureDataUrl: signedInfo?.signatureDataUrl,
+            };
+
+            const exported = await fetchDashboardReportHtmlForExport(dashboardUri, patchParams);
+
+            if (exported && (await Sharing.isAvailableAsync())) {
+                const { uri } = await Print.printToFileAsync({
+                    html: exported.htmlForPrint,
+                    margins: { top: 12, bottom: 12, left: 12, right: 12 },
+                });
+                await Sharing.shareAsync(uri);
+                return;
+            }
+
+            // Legacy: hosted PDF from sign flow (may differ from preview).
+            if (isSigned && signedReportUrl) {
+                if (await Sharing.isAvailableAsync()) {
+                    const dest = `${FileSystem.cacheDirectory}fw_signed_report_${dateKey}.pdf`;
+                    const result = signedReportUrl.startsWith('file://')
+                        ? { uri: signedReportUrl }
+                        : await FileSystem.downloadAsync(signedReportUrl, dest);
+                    await Sharing.shareAsync(result.uri);
+                    return;
+                }
+                if (await Linking.canOpenURL(signedReportUrl)) {
+                    await Linking.openURL(signedReportUrl);
+                    return;
+                }
+            }
+
+            Alert.alert(
+                'Export failed',
+                'Could not build a PDF from the report page. Check your connection and try again.',
+            );
+        } catch {
+            Alert.alert('Error', 'Failed to export the report.');
+        } finally {
+            setDownloading(false);
+        }
+    }, [
+        dashboardUri,
+        dateKey,
+        isSigned,
+        signedInfo?.preparedBy,
+        signedInfo?.signatureDataUrl,
+        signedReportUrl,
+        currentUser.name,
+    ]);
+
+    const preparedByForHtml = useMemo(() => {
+        return (signedInfo?.preparedBy || currentUser.name || '').trim();
+    }, [signedInfo?.preparedBy, currentUser.name]);
+
+    useEffect(() => {
+        let cancelled = false;
+        async function loadDashboardHtml() {
+            if (!dashboardUri) {
+                setDashboardHtml(null);
+                setDashboardBaseUrl(undefined);
+                return;
+            }
+            setWebLoading(true);
+            try {
+                const res = await fetch(dashboardUri, { method: 'GET' });
+                const html = await res.text();
+                if (cancelled) return;
+
+                const patched = patchDashboardReportHtml(html, {
+                    preparedBy: preparedByForHtml,
+                    isSignedWithSignature: !!(isSigned && signedInfo?.signatureDataUrl),
+                    signatureDataUrl: signedInfo?.signatureDataUrl,
+                });
+
+                // Base URL helps relative assets resolve.
+                try {
+                    const u = new URL(dashboardUri);
+                    setDashboardBaseUrl(`${u.protocol}//${u.host}`);
+                } catch {
+                    setDashboardBaseUrl(undefined);
+                }
+
+                setDashboardHtml(patched);
+            } catch {
+                // Fallback: if fetch fails, let WebView load by uri.
+                setDashboardHtml(null);
+                setDashboardBaseUrl(undefined);
+            } finally {
+                if (!cancelled) setWebLoading(false);
+            }
+        }
+        void loadDashboardHtml();
+        return () => {
+            cancelled = true;
+        };
+    }, [dashboardUri, preparedByForHtml, isSigned, signedInfo]);
 
     const renderReportWeb = () => {
         if (!dashboardUri) {
@@ -111,7 +263,11 @@ export default function ReportPreviewScreen() {
                 )}
                 <WebView
                     key={dashboardUri}
-                    source={{ uri: dashboardUri }}
+                    source={
+                        dashboardHtml
+                            ? { html: dashboardHtml, baseUrl: dashboardBaseUrl }
+                            : { uri: dashboardUri }
+                    }
                     style={styles.webview}
                     onLoadStart={() => setWebLoading(true)}
                     onLoadEnd={() => setWebLoading(false)}
@@ -129,13 +285,28 @@ export default function ReportPreviewScreen() {
                     <Text style={styles.backText}>Back</Text>
                 </TouchableOpacity>
                 <Text style={styles.headerTitle}>Daily Report</Text>
-                <View style={{ minWidth: 72, alignItems: 'flex-end' }}>
-                    {isSigned && (
+                <View style={styles.headerRight}>
+                    {dashboardUri ? (
+                        <TouchableOpacity
+                            style={[styles.downloadBtn, downloading && { opacity: 0.7 }]}
+                            onPress={handleDownloadReport}
+                            disabled={downloading}
+                            hitSlop={10}
+                            accessibilityLabel="Download or share report PDF"
+                        >
+                            {downloading ? (
+                                <ActivityIndicator color="#fff" size="small" />
+                            ) : (
+                                <Ionicons name="download-outline" size={18} color="#fff" />
+                            )}
+                        </TouchableOpacity>
+                    ) : null}
+                    {isSigned ? (
                         <View style={styles.signedBadge}>
                             <Ionicons name="checkmark-circle" size={14} color={C.success} />
                             <Text style={styles.signedBadgeText}>Signed</Text>
                         </View>
-                    )}
+                    ) : null}
                 </View>
             </View>
 
@@ -194,6 +365,15 @@ const styles = StyleSheet.create({
     backBtn: { flexDirection: 'row', alignItems: 'center', gap: 2, minWidth: 72 },
     backText: { color: '#fff', fontSize: 15, fontWeight: '500' },
     headerTitle: { flex: 1, textAlign: 'center', color: '#fff', fontSize: 16, fontWeight: '700' },
+    headerRight: { minWidth: 72, alignItems: 'flex-end', flexDirection: 'row', gap: 10 },
+    downloadBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: 10,
+        backgroundColor: C.brand,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
     loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
     loadingText: { color: C.subtitle, fontSize: 14, textAlign: 'center' },
     signedBadge: {

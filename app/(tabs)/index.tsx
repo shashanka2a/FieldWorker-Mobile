@@ -60,41 +60,73 @@ export default function HomeScreen() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Load day statuses for calendar: green = signed, yellow = has data but unsigned, red triangle = missing (weekdays).
-    // Scoped to the selected project; merges local AsyncStorage + Supabase for the visible month.
+    // Load day statuses: green = signed (local or DB), yellow = has data but unsigned (local or DB, any user),
+    // red dot = weekday in the past with no data for this project (local + DB). Grid includes partial weeks at month edges.
     const loadDayStatuses = useCallback(async () => {
         const year = selectedDate.getFullYear();
         const month = selectedDate.getMonth();
-        const daysInMonth = new Date(year, month + 1, 0).getDate();
         const statuses: Record<string, DayStatus> = {};
         const projectId = selectedProject?.id ?? '';
         const projectName = selectedProject?.name ?? '';
 
         let remoteActivity = new Set<string>();
         let remoteSigned = new Set<string>();
-        try {
-            const remote = await fetchCalendarMonthActivityAndSignedFromSupabase(year, month, projectId, projectName);
-            remoteActivity = remote.activityDates;
-            remoteSigned = remote.signedDates;
-        } catch {
-            /* offline / network */
+        let remoteFetchOk = false;
+        if (projectId) {
+            try {
+                const remote = await fetchCalendarMonthActivityAndSignedFromSupabase(
+                    year,
+                    month,
+                    projectId,
+                    projectName
+                );
+                remoteActivity = remote.activityDates;
+                remoteSigned = remote.signedDates;
+                remoteFetchOk = true;
+            } catch {
+                /* offline / network */
+            }
         }
 
+        const monthStart = new Date(year, month, 1);
+        const monthEnd = new Date(year, month + 1, 0);
+        const gridStart = new Date(monthStart);
+        gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+        const gridEnd = new Date(monthEnd);
+        gridEnd.setDate(gridEnd.getDate() + (6 - monthEnd.getDay()));
+
+        const gridEndNorm = new Date(gridEnd.getFullYear(), gridEnd.getMonth(), gridEnd.getDate());
         const promises: Promise<void>[] = [];
-        for (let day = 1; day <= daysInMonth; day++) {
-            const date = new Date(year, month, day);
-            const dayOfWeek = date.getDay();
-            if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+
+        for (
+            let c = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate());
+            c.getTime() <= gridEndNorm.getTime();
+            c.setDate(c.getDate() + 1)
+        ) {
+            const date = new Date(c.getFullYear(), c.getMonth(), c.getDate());
             if (date > today) continue;
 
             const dateKey = DailyReportStorage.getDateKey(date);
+            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+
             promises.push(
                 (async () => {
                     const hasLocalOrRemote =
                         (await DailyReportStorage.hasDataForDateForProject(dateKey, projectName)) ||
                         remoteActivity.has(dateKey);
-                    const localSigned = await DailyReportStorage.isReportFullySignedForProject(dateKey, projectName);
-                    const signed = localSigned || remoteSigned.has(dateKey);
+                    const localSigned = await DailyReportStorage.isReportFullySignedForProject(
+                        dateKey,
+                        projectName
+                    );
+                    const signed = remoteFetchOk
+                        ? remoteSigned.has(dateKey)
+                        : localSigned || remoteSigned.has(dateKey);
+
+                    if (isWeekend) {
+                        if (signed) statuses[dateKey] = 'signed';
+                        else if (hasLocalOrRemote) statuses[dateKey] = 'unsigned';
+                        return;
+                    }
                     if (signed) statuses[dateKey] = 'signed';
                     else if (hasLocalOrRemote) statuses[dateKey] = 'unsigned';
                     else statuses[dateKey] = 'missing';
@@ -171,6 +203,20 @@ export default function HomeScreen() {
         year: 'numeric',
     });
 
+    const statusMark = (status: DayStatus, isFuture: boolean) => {
+        if (isFuture) return null;
+        if (status === 'signed') {
+            return <View style={[styles.dot, { backgroundColor: COLORS.success }]} />;
+        }
+        if (status === 'unsigned') {
+            return <View style={[styles.bar, { backgroundColor: COLORS.warning }]} />;
+        }
+        if (status === 'missing') {
+            return <View style={[styles.dot, { backgroundColor: COLORS.danger }]} />;
+        }
+        return null;
+    };
+
     return (
         <SafeAreaView style={styles.container} edges={['top']}>
             <ScrollView
@@ -219,6 +265,9 @@ export default function HomeScreen() {
                             const dayLetter = date.toLocaleDateString('en-US', { weekday: 'short' })[0];
                             const dayNum = date.getDate();
 
+                            const dateKey = DailyReportStorage.getDateKey(date);
+                            const status = dayStatuses[dateKey] ?? 'none';
+
                             return (
                                 <TouchableOpacity
                                     key={idx}
@@ -249,6 +298,7 @@ export default function HomeScreen() {
                                             {dayNum}
                                         </Text>
                                     </View>
+                                    <View style={styles.weekdayStatusMark}>{statusMark(status, isFuture)}</View>
                                 </TouchableOpacity>
                             );
                         })}
@@ -381,15 +431,7 @@ export default function HomeScreen() {
                                         </Text>
                                         {/* Status indicator */}
                                         <View style={styles.statusIndicator}>
-                                            {status === 'signed' && (
-                                                <View style={[styles.dot, { backgroundColor: COLORS.success }]} />
-                                            )}
-                                            {status === 'unsigned' && (
-                                                <View style={[styles.bar, { backgroundColor: COLORS.warning }]} />
-                                            )}
-                                            {status === 'missing' && !isFuture && (
-                                                <View style={styles.triangle} />
-                                            )}
+                                            {statusMark(status, isFuture)}
                                         </View>
                                     </TouchableOpacity>
                                 );
@@ -407,8 +449,8 @@ export default function HomeScreen() {
                                 <Text style={styles.legendText}>Unsigned</Text>
                             </View>
                             <View style={styles.legendItem}>
-                                <View style={styles.triangle} />
-                                <Text style={styles.legendText}>Missing</Text>
+                                <View style={[styles.dot, { backgroundColor: COLORS.danger }]} />
+                                <Text style={styles.legendText}>No data</Text>
                             </View>
                         </View>
                     </Pressable>
@@ -463,6 +505,7 @@ const styles = StyleSheet.create({
     weekdayNumText: { fontSize: 14, fontWeight: '600', color: '#fff' },
     weekdaySelectedText: { color: '#fff' },
     weekdayTodayText: { color: COLORS.blue },
+    weekdayStatusMark: { height: 8, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
     mutedText: { color: COLORS.muted },
 
     // Task grid
@@ -516,16 +559,6 @@ const styles = StyleSheet.create({
     statusIndicator: { height: 8, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
     dot: { width: 6, height: 6, borderRadius: 3 },
     bar: { width: 14, height: 3, borderRadius: 1.5 },
-    triangle: {
-        width: 0,
-        height: 0,
-        borderLeftWidth: 4,
-        borderRightWidth: 4,
-        borderBottomWidth: 7,
-        borderLeftColor: 'transparent',
-        borderRightColor: 'transparent',
-        borderBottomColor: '#FF453A',
-    },
 
     // Legend
     legend: { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 12, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border },

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
     View,
     Text,
@@ -9,13 +9,28 @@ import {
     Alert,
     ActivityIndicator,
 } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { createUuid, getDateKey, getTimestampForReportingDay, saveSurvey, getSurveyForDate, SurveyQuestionEntry } from '@/lib/dailyReportStorage';
+import {
+    createUuid,
+    getDateKey,
+    getSubmittedAtIso,
+    saveSurvey,
+    getSurveyForDate,
+    SurveyQuestionEntry,
+    SurveyEntry,
+} from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchSurveyFromSupabase } from '@/lib/supabaseSync';
 import { buildSurveyTemplateApiUrl } from '@/lib/reportDashboardUrl';
+import {
+    isPositiveComplianceSurveyQuestion,
+    surveyQuestionWantsDetailsForAnswer,
+} from '@/lib/surveyQuestionSemantics';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -35,6 +50,8 @@ const SURVEY_QUESTIONS = [
     'Were there any weather delays today?',
     'Were there any safety concerns or hazards observed?',
     'Were all PPE requirements properly followed?',
+    'Did you verify all employees clocked in and out to the correct project?',
+    'Were all receipts uploaded to DEXT correctly?',
     'Was any emergency equipment inspected or used?',
     'Were there any trespassing or security incidents?',
     'Were there any environmental concerns (spill, contamination)?',
@@ -43,14 +60,28 @@ const SURVEY_QUESTIONS = [
 
 const DEFAULT_ANSWER_OPTIONS: Answer[] = ['N/A', 'No', 'Yes'];
 
-const ANSWER_STYLES: Record<string, { bg: string; textColor: string }> = {
-    'N/A': { bg: COLORS.subtitle + '30', textColor: COLORS.subtitle },
-    'No': { bg: COLORS.success + '30', textColor: COLORS.success },
-    'Yes': { bg: COLORS.danger + '30', textColor: COLORS.danger },
-};
+function answerChipColors(question: string, opt: string): { bg: string; textColor: string } {
+    if (opt === 'N/A' || opt === '') {
+        return { bg: COLORS.subtitle + '30', textColor: COLORS.subtitle };
+    }
+    if (opt !== 'Yes' && opt !== 'No') {
+        return { bg: COLORS.subtitle + '30', textColor: COLORS.subtitle };
+    }
+    const compliance = isPositiveComplianceSurveyQuestion(question);
+    if (opt === 'Yes') {
+        return compliance
+            ? { bg: COLORS.success + '30', textColor: COLORS.success }
+            : { bg: COLORS.danger + '30', textColor: COLORS.danger };
+    }
+    return compliance
+        ? { bg: COLORS.danger + '30', textColor: COLORS.danger }
+        : { bg: COLORS.success + '30', textColor: COLORS.success };
+}
 
 export default function SurveyScreen() {
     const { selectedDate, selectedProject } = useAppContext();
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const projectKey = (selectedProject?.id || selectedProject?.name || 'project').replace(/\s+/g, '_');
     const [answerOptions, setAnswerOptions] = useState<Answer[]>(DEFAULT_ANSWER_OPTIONS);
     const [questions, setQuestions] = useState<SurveyQuestionEntry[]>(
         SURVEY_QUESTIONS.map((q, i) => ({ id: String(i + 1), question: q, answer: '', description: '' }))
@@ -59,73 +90,87 @@ export default function SurveyScreen() {
     const [success, setSuccess] = useState(false);
     const [entryId, setEntryId] = useState<string | null>(null);
     const [mode, setMode] = useState<'overview' | 'edit'>('edit');
+    const [surveyLoadReady, setSurveyLoadReady] = useState(false);
+    const surveyDraftKey = useMemo(
+        () => `fw_draft_survey_${dateKey}_${projectKey}_${entryId ?? 'new'}`,
+        [dateKey, projectKey, entryId]
+    );
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
     useFocusEffect(
         React.useCallback(() => {
             let active = true;
+            setSurveyLoadReady(false);
             (async () => {
-                // Load per-project template (dashboard API), fallback to hardcoded list.
                 try {
-                    const projectName = selectedProject?.name ?? '';
-                    if (projectName && projectName !== 'No Project Selected') {
-                        const res = await fetch(buildSurveyTemplateApiUrl(projectName));
-                        if (res.ok) {
-                            const json = (await res.json()) as any;
-                            const rawQuestions = Array.isArray(json?.questions) ? json.questions : [];
-                            const rawAnswers = Array.isArray(json?.answerChoices) ? json.answerChoices : null;
+                    // Load per-project template (dashboard API), fallback to hardcoded list.
+                    try {
+                        const projectName = selectedProject?.name ?? '';
+                        if (projectName && projectName !== 'No Project Selected') {
+                            const res = await fetch(buildSurveyTemplateApiUrl(projectName));
+                            if (res.ok) {
+                                const json = (await res.json()) as any;
+                                const rawQuestions = Array.isArray(json?.questions) ? json.questions : [];
+                                const rawAnswers = Array.isArray(json?.answerChoices) ? json.answerChoices : null;
 
-                            const templateQuestions: SurveyQuestionEntry[] = rawQuestions
-                                .map((q: any, idx: number) => ({
-                                    id: String(q?.id ?? idx + 1),
-                                    question: String(q?.question ?? '').trim(),
-                                    answer: '',
-                                    description: '',
-                                }))
-                                .filter((q: SurveyQuestionEntry) => q.question.length > 0);
+                                const templateQuestions: SurveyQuestionEntry[] = rawQuestions
+                                    .map((q: any, idx: number) => ({
+                                        id: String(q?.id ?? idx + 1),
+                                        question: String(q?.question ?? '').trim(),
+                                        answer: '',
+                                        description: '',
+                                    }))
+                                    .filter((q: SurveyQuestionEntry) => q.question.length > 0);
 
-                            const templateAnswerOptions: Answer[] =
-                                rawAnswers && rawAnswers.length > 0
-                                    ? (rawAnswers
-                                          .map((a: any) => String(a ?? '').trim())
-                                          .filter(Boolean) as Answer[])
-                                    : DEFAULT_ANSWER_OPTIONS;
+                                const templateAnswerOptions: Answer[] =
+                                    rawAnswers && rawAnswers.length > 0
+                                        ? (rawAnswers
+                                              .map((a: any) => String(a ?? '').trim())
+                                              .filter(Boolean) as Answer[])
+                                        : DEFAULT_ANSWER_OPTIONS;
 
-                            if (active) {
-                                if (templateQuestions.length > 0) setQuestions(templateQuestions);
-                                setAnswerOptions(templateAnswerOptions);
+                                if (active) {
+                                    if (templateQuestions.length > 0) setQuestions(templateQuestions);
+                                    setAnswerOptions(templateAnswerOptions);
+                                }
                             }
                         }
+                    } catch {
+                        // ignore (offline / bad response)
                     }
-                } catch {
-                    // ignore (offline / bad response)
-                }
 
-                const dateKey = getDateKey(selectedDate);
-                const localData = await getSurveyForDate(dateKey);
-                const remoteData = await fetchSurveyFromSupabase(
-                    dateKey,
-                    selectedDate,
-                    selectedProject?.id ?? '',
-                    selectedProject?.name ?? ''
-                );
-                const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
-                // Pre-fill with the first/most recent survey entry if it exists
-                if (data.length > 0 && active) {
-                    const latest = data[data.length - 1]; // if multiple, use latest
-                    setEntryId(latest.id);
-                    setMode('overview');
-                    if (latest.questions && latest.questions.length > 0) {
-                        setQuestions(latest.questions);
+                    const localData = await getSurveyForDate(dateKey);
+                    const remoteData = await fetchSurveyFromSupabase(
+                        dateKey,
+                        selectedDate,
+                        selectedProject?.id ?? '',
+                        selectedProject?.name ?? ''
+                    );
+                    const data = mergeLocalRemotePreferSupabase(
+                        localData,
+                        remoteData,
+                        matchProjectPredicate<SurveyEntry>(selectedProject?.name)
+                    );
+                    const sortedSurvey = [...data].sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
+                    // Pre-fill with the first/most recent survey entry if it exists
+                    if (sortedSurvey.length > 0 && active) {
+                        const latest = sortedSurvey[sortedSurvey.length - 1];
+                        setEntryId(latest.id);
+                        setMode('overview');
+                        if (latest.questions && latest.questions.length > 0) {
+                            setQuestions(latest.questions);
+                        }
+                    } else if (active) {
+                        setEntryId(null);
+                        setMode('edit');
                     }
-                } else if (active) {
-                    setEntryId(null);
-                    setMode('edit');
+                } finally {
+                    if (active) setSurveyLoadReady(true);
                 }
             })();
             return () => { active = false; };
-        }, [selectedDate, selectedProject?.name])
+        }, [dateKey, selectedDate, selectedProject?.id, selectedProject?.name])
     );
 
     const setAnswer = (idx: number, answer: Answer) => {
@@ -144,6 +189,39 @@ export default function SurveyScreen() {
         });
     };
 
+    const surveyDraftSnapshot = useMemo(
+        () => JSON.stringify({ questions, answerOptions }),
+        [questions, answerOptions]
+    );
+
+    useFormDraft({
+        storageKey: surveyDraftKey,
+        active: surveyLoadReady && mode === 'edit',
+        snapshotJson: surveyDraftSnapshot,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as { questions?: SurveyQuestionEntry[]; answerOptions?: string[] };
+            if (Array.isArray(p.answerOptions) && p.answerOptions.length > 0) {
+                setAnswerOptions(p.answerOptions as Answer[]);
+            }
+            if (!Array.isArray(p.questions) || p.questions.length === 0) return;
+            setQuestions((cur) => {
+                const byId = new Map(p.questions!.map((q) => [String(q.id), q]));
+                return cur.map((q) => {
+                    const dq = byId.get(String(q.id));
+                    if (!dq) return q;
+                    return {
+                        ...q,
+                        answer: (dq.answer ?? q.answer) as Answer,
+                        description: dq.description ?? q.description ?? '',
+                    };
+                });
+            });
+        },
+        isNonEmpty: () =>
+            questions.some((q) => !!q.answer || (q.description?.trim() ?? '').length > 0),
+    });
+
     const handleSubmit = async () => {
         const unanswered = questions.filter((q) => q.answer === '');
         if (unanswered.length > 0) {
@@ -152,14 +230,14 @@ export default function SurveyScreen() {
         }
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
             const id = entryId ?? createUuid();
             await saveSurvey(dateKey, {
                 id,
                 project: selectedProject,
-                timestamp: getTimestampForReportingDay(selectedDate),
+                timestamp: getSubmittedAtIso(),
                 questions,
             });
+            await clearFormDraft(surveyDraftKey);
             setEntryId(id); // prevents duplicates on repeated saves
             setSuccess(true);
             setMode('overview');
@@ -187,7 +265,7 @@ export default function SurveyScreen() {
                     ) : null
                 }
             />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+            <KeyboardAwareScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 {/* Progress bar */}
                 <View style={styles.progressWrap}>
                     <View style={styles.progressBar}>
@@ -197,16 +275,19 @@ export default function SurveyScreen() {
                 </View>
 
                 {questions.map((q, idx) => {
-                    const hasYes = q.answer === 'Yes';
+                    const wantsDetails = surveyQuestionWantsDetailsForAnswer(q.question, q.answer);
+                    const detailPlaceholder = isPositiveComplianceSurveyQuestion(q.question)
+                        ? 'Describe what was missing or not followed…'
+                        : 'Describe the incident or concern…';
                     return (
-                        <View key={q.id} style={styles.questionCard}>
+                        <KeyboardField key={q.id} style={styles.questionCard}>
                             <Text style={styles.questionNum}>Question {idx + 1} of {questions.length}</Text>
                             <Text style={styles.questionText}>{q.question}</Text>
 
                             <View style={styles.answerRow}>
                                 {answerOptions.map((opt) => {
                                     const isSelected = q.answer === opt;
-                                    const style = ANSWER_STYLES[opt];
+                                    const style = answerChipColors(q.question, opt);
                                     return (
                                         <TouchableOpacity
                                             key={opt}
@@ -224,28 +305,30 @@ export default function SurveyScreen() {
                                 })}
                             </View>
 
-                            {/* Show description input for Yes answers */}
-                            {hasYes && (
-                                <TextInput
-                                    style={styles.descInput}
-                                    value={q.description}
-                                    onChangeText={(v) => { if (mode === 'edit') setDescription(idx, v); }}
-                                    placeholder="Describe the incident or concern..."
-                                    placeholderTextColor={COLORS.subtitle}
-                                    multiline
-                                    numberOfLines={3}
-                                    textAlignVertical="top"
-                                    editable={mode === 'edit'}
-                                />
+                            {/* Problem questions: detail on "Yes". Compliance (e.g. PPE): detail on "No". */}
+                            {wantsDetails && (
+                                <ScrollInputField>
+                                    <TextInput
+                                        style={styles.descInput}
+                                        value={q.description}
+                                        onChangeText={(v) => { if (mode === 'edit') setDescription(idx, v); }}
+                                        placeholder={detailPlaceholder}
+                                        placeholderTextColor={COLORS.subtitle}
+                                        multiline
+                                        numberOfLines={3}
+                                        textAlignVertical="top"
+                                        editable={mode === 'edit'}
+                                    />
+                                </ScrollInputField>
                             )}
 
-                            {mode === 'overview' && !hasYes && q.description?.trim() ? (
+                            {mode === 'overview' && !wantsDetails && q.description?.trim() ? (
                                 <View style={styles.readOnlyDescWrap}>
                                     <Text style={styles.readOnlyDescLabel}>Details</Text>
                                     <Text style={styles.readOnlyDescText}>{q.description}</Text>
                                 </View>
                             ) : null}
-                        </View>
+                        </KeyboardField>
                     );
                 })}
 
@@ -260,7 +343,7 @@ export default function SurveyScreen() {
                                 <Text style={styles.submitText}>Save Survey</Text>}
                     </TouchableOpacity>
                 )}
-            </ScrollView>
+            </KeyboardAwareScrollView>
         </View>
     );
 }

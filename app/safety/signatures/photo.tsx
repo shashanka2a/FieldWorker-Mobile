@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
     View,
     Text,
@@ -13,10 +13,13 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { useAppContext } from '@/context/AppContext';
 import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
+import { getDateKey } from '@/lib/dailyReportStorage';
 import { getTemplateById } from '@/lib/safetyTemplates';
 import { addConductedSafetyTalk } from '@/lib/safetyStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { fetchSafetyTalkTemplateByIdFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -28,13 +31,30 @@ const COLORS = {
 };
 
 export default function PhotoSignaturesScreen() {
+    const { selectedDate, selectedProject } = useAppContext();
     const { templateId } = useLocalSearchParams<{ templateId?: string }>();
-    const template = getTemplateById(templateId ?? '');
+    const fallbackTemplate = getTemplateById(templateId ?? '');
+    const [remoteTemplate, setRemoteTemplate] = useState<typeof fallbackTemplate | null>(null);
+    const template = remoteTemplate ?? fallbackTemplate;
     const { applyCameraWatermark } = useFieldPhotoWatermark();
 
     const [photos, setPhotos] = useState<string[]>([]);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+
+    useEffect(() => {
+        let mounted = true;
+        const id = (templateId ?? '').trim();
+        if (!id) return;
+        (async () => {
+            const t = await fetchSafetyTalkTemplateByIdFromSupabase(id);
+            if (!mounted) return;
+            if (t) setRemoteTemplate(t);
+        })();
+        return () => {
+            mounted = false;
+        };
+    }, [templateId]);
 
     const takePhoto = async () => {
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -70,22 +90,41 @@ export default function PhotoSignaturesScreen() {
             Alert.alert('Required', 'Please take at least one photo of the signed sheet.');
             return;
         }
+        if (!selectedProject.id) {
+            Alert.alert(
+                'Select a project',
+                'Choose a field project from the app home screen before completing this safety talk.'
+            );
+            return;
+        }
         setSaving(true);
         try {
-            const now = new Date();
-            const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            const key = `safety_sig_photo_${templateId}_${Date.now()}`;
-            await AsyncStorage.setItem(key, JSON.stringify({
-                templateId,
-                templateName: template?.name ?? '',
-                photos,
-                completedAt: new Date().toISOString(),
-            }));
+            const dateKey = getDateKey(selectedDate);
+            const templateName = template?.name ?? fallbackTemplate?.name ?? '';
             if (templateId) {
-                await addConductedSafetyTalk(dateKey, templateId, template?.name ?? '');
+                const talkId = await addConductedSafetyTalk(
+                    dateKey,
+                    templateId,
+                    templateName,
+                    selectedProject.id,
+                    selectedProject.name
+                );
+                await AsyncStorage.setItem(`safety_talk_completed_${talkId}`, JSON.stringify({
+                    talkId,
+                    templateId,
+                    templateName,
+                    dateKey,
+                    photos,
+                    attendeeCount: undefined,
+                    completedAt: new Date().toISOString(),
+                }));
+                setSaved(true);
+                // Jump straight to the completed talk preview (no back-tracing through steps).
+                setTimeout(() => router.replace(`/safety/read?talkId=${talkId}` as any), 350);
+                return;
             }
             setSaved(true);
-            setTimeout(() => router.replace('/safety?tab=conducted' as any), 500);
+            setTimeout(() => router.replace('/safety?tab=conducted' as any), 350);
         } catch {
             Alert.alert('Error', 'Failed to save. Please try again.');
         } finally {

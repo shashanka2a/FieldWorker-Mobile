@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -9,8 +9,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from 'expo-router';
+import { useAuth } from '@/context/AuthContext';
+import { useAppContext } from '@/context/AppContext';
+import { fetchActivityFeedFromAuditLog, type AuditActivityFeedRow, dailySignedReportRowLooksSigned } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -28,16 +30,28 @@ const COLORS = {
 
 type FilterType = 'all' | 'today' | 'week';
 
+export type ActivityFeedType =
+    | 'notes'
+    | 'chemicals'
+    | 'metrics'
+    | 'survey'
+    | 'equipment'
+    | 'attachments'
+    | 'report'
+    | 'observations'
+    | 'incidents'
+    | 'safety_talks';
+
 interface ActivityItem {
     id: string;
-    type: 'notes' | 'chemicals' | 'metrics' | 'survey' | 'equipment' | 'attachments' | 'report' | 'observations' | 'incidents';
+    type: ActivityFeedType;
     title: string;
     subtitle: string;
     timestamp: string;
     timestampDate: Date;
 }
 
-const ACTIVITY_ICON_MAP: Record<string, { icon: string; color: string }> = {
+const ACTIVITY_ICON_MAP: Record<ActivityFeedType, { icon: string; color: string }> = {
     notes: { icon: 'document-text', color: COLORS.blue },
     chemicals: { icon: 'flask', color: COLORS.amber },
     metrics: { icon: 'speedometer', color: COLORS.success },
@@ -47,113 +61,174 @@ const ACTIVITY_ICON_MAP: Record<string, { icon: string; color: string }> = {
     report: { icon: 'bar-chart', color: COLORS.success },
     observations: { icon: 'eye', color: COLORS.brand },
     incidents: { icon: 'warning', color: COLORS.danger },
+    safety_talks: { icon: 'shield-checkmark', color: COLORS.success },
 };
 
+function snapshotOf(row: AuditActivityFeedRow): Record<string, unknown> {
+    const d = row.details;
+    if (!d || typeof d !== 'object') return {};
+    const snap = (d as Record<string, unknown>).snapshot;
+    if (!snap || typeof snap !== 'object') return {};
+    return snap as Record<string, unknown>;
+}
+
+function str(v: unknown, max = 120): string {
+    if (typeof v !== 'string') return '';
+    const t = v.trim();
+    if (t.length <= max) return t;
+    return `${t.slice(0, max)}…`;
+}
+
+function entityTypeToFeedType(entityType: string | null): ActivityFeedType {
+    switch (entityType) {
+        case 'notes':
+            return 'notes';
+        case 'chemicals_logs':
+            return 'chemicals';
+        case 'metrics':
+            return 'metrics';
+        case 'surveys':
+            return 'survey';
+        case 'equipment_logs':
+        case 'equipment_checklists':
+            return 'equipment';
+        case 'attachments':
+            return 'attachments';
+        case 'observations':
+            return 'observations';
+        case 'incidents':
+            return 'incidents';
+        case 'daily_signed_reports':
+            return 'report';
+        case 'safety_talks':
+            return 'safety_talks';
+        default:
+            return 'notes';
+    }
+}
+
+function auditRowToActivityItem(row: AuditActivityFeedRow): ActivityItem {
+    const snap = snapshotOf(row);
+    const entity = row.entity_type ?? '';
+    const type = entityTypeToFeedType(entity);
+    const d = new Date(row.created_at);
+    const rd = row.report_date ? ` · ${row.report_date}` : '';
+
+    let title = 'Activity';
+    let subtitle =
+        typeof (row.details as Record<string, unknown>)?.sync_action === 'string'
+            ? String((row.details as Record<string, unknown>).sync_action).replace(/\./g, ' ')
+            : row.action.replace(/\./g, ' ');
+
+    if (entity === 'notes') {
+        title = 'Note saved';
+        subtitle = str(snap.notes_text, 100) || `Notes${rd}`;
+    } else if (entity === 'chemicals_logs') {
+        title = 'Chemical log';
+        const apps = (row.details as Record<string, unknown>)?.related as Record<string, unknown> | undefined;
+        const list = apps?.chemical_applications;
+        const n = Array.isArray(list) ? list.length : 0;
+        subtitle = n > 0 ? `${n} application(s)${rd}` : `Application log${rd}`;
+    } else if (entity === 'metrics') {
+        title = 'Metrics saved';
+        const parts: string[] = [];
+        if (snap.water_usage != null) parts.push(`Water ${snap.water_usage}`);
+        if (snap.acres_completed != null) parts.push(`Acres ${snap.acres_completed}`);
+        subtitle = parts.join(' · ') || `Daily metrics${rd}`;
+    } else if (entity === 'surveys') {
+        title = 'Site survey';
+        const rel = (row.details as Record<string, unknown>)?.related as Record<string, unknown> | undefined;
+        const qs = rel?.survey_questions;
+        const n = Array.isArray(qs) ? qs.length : 0;
+        subtitle = n > 0 ? `${n} questions${rd}` : `Survey${rd}`;
+    } else if (entity === 'equipment_logs') {
+        title = 'Equipment log';
+        subtitle = str(snap.value, 40) || `Equipment${rd}`;
+    } else if (entity === 'equipment_checklists') {
+        title = 'Equipment checklist';
+        const fd = snap.form_data as Record<string, string> | undefined;
+        const machineLabel = [fd?.machineType, fd?.machineNumber].filter(Boolean).join(' · ');
+        subtitle = machineLabel || fd?.siteName || `Checklist${rd}`;
+    } else if (entity === 'attachments') {
+        title = 'Attachments';
+        const names = snap.file_names;
+        const n = Array.isArray(names) ? names.length : 0;
+        subtitle = n > 0 ? `${n} file(s)${rd}` : `Upload${rd}`;
+    } else if (entity === 'observations') {
+        title = `${snap.category ?? 'Observation'}`;
+        subtitle = str(snap.type, 80) || str(snap.description, 80) || `Observation${rd}`;
+    } else if (entity === 'incidents') {
+        title = 'Incident';
+        subtitle = str(snap.title, 100) || `Incident${rd}`;
+    } else if (entity === 'daily_signed_reports') {
+        title = dailySignedReportRowLooksSigned(snap as { signature_url?: string | null; is_signed?: boolean | null })
+            ? 'Daily report signed'
+            : 'Daily report updated';
+        subtitle = str(snap.prepared_by, 60) ? `${str(snap.prepared_by, 60)}${rd}` : `Report${rd}`;
+    } else if (entity === 'safety_talks') {
+        title = 'Safety talk';
+        subtitle = str(snap.template_name, 80) || `Safety${rd}`;
+    }
+
+    return {
+        id: row.id,
+        type,
+        title,
+        subtitle,
+        timestamp: `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        timestampDate: d,
+    };
+}
+
+const NO_PROJECT = 'No Project Selected';
+
 export default function ActivityScreen() {
+    const { session } = useAuth();
+    const { selectedProject } = useAppContext();
     const [filter, setFilter] = useState<FilterType>('all');
     const [activities, setActivities] = useState<ActivityItem[]>([]);
     const [refreshing, setRefreshing] = useState(false);
 
     const loadActivities = useCallback(async () => {
+        const uid = session?.user?.id;
+        if (!uid) {
+            setActivities([]);
+            return;
+        }
+        const projectName = selectedProject?.name?.trim() ?? '';
+        if (!projectName || projectName === NO_PROJECT) {
+            setActivities([]);
+            return;
+        }
         try {
-            const keys = await AsyncStorage.getAllKeys();
-            const prefixes = ['notes_', 'chemicals_', 'metrics_', 'survey_', 'equipment_', 'attachments_', 'observations_', 'incidents_'];
-            const relevantKeys = keys.filter(k => prefixes.some(p => k.startsWith(p)));
-
-            if (relevantKeys.length === 0) {
-                setActivities([]);
-                return;
-            }
-
-            const kvs = await AsyncStorage.multiGet(relevantKeys);
-            const allItems: ActivityItem[] = [];
-
-            for (const [key, value] of kvs) {
-                if (!value) continue;
-                try {
-                    const parsed = JSON.parse(value);
-                    if (!Array.isArray(parsed)) continue;
-
-                    for (const entry of parsed) {
-                        if (!entry.timestamp) continue;
-
-                        let type = 'notes';
-                        if (key.startsWith('chemicals_')) type = 'chemicals';
-                        else if (key.startsWith('metrics_')) type = 'metrics';
-                        else if (key.startsWith('survey_')) type = 'survey';
-                        else if (key.startsWith('equipment_')) type = 'equipment';
-                        else if (key.startsWith('attachments_')) type = 'attachments';
-                        else if (key.startsWith('observations_')) type = 'observations';
-                        else if (key.startsWith('incidents_')) type = 'incidents';
-
-                        let title = 'Unknown Entry';
-                        let subtitle = 'Logged activity';
-
-                        if (type === 'notes') {
-                            title = 'New Note Created';
-                            subtitle = entry.notes?.slice(0, 50) + (entry.notes?.length > 50 ? '...' : '') || 'No description';
-                        } else if (type === 'chemicals') {
-                            title = 'Chemical Log';
-                            subtitle = `${entry.chemicals?.length || 0} chemicals applied`;
-                        } else if (type === 'metrics') {
-                            title = 'Daily Metrics Saved';
-                            const ops = entry.numberOfOperators ? `${entry.numberOfOperators} operators` : '';
-                            subtitle = ops || 'Metrics recorded';
-                        } else if (type === 'survey') {
-                            title = 'Site Survey Completed';
-                            subtitle = `${entry.questions?.length || 0} questions answered`;
-                        } else if (type === 'equipment') {
-                            title = typeof entry.formData !== 'undefined' ? 'Equipment Checklist' : 'Equipment Entry';
-                            subtitle = entry.formData?.machineNumber || 'Checklist completed';
-                        } else if (type === 'attachments') {
-                            title = 'Attachments Uploaded';
-                            subtitle = `${entry.fileNames?.length || 0} files attached`;
-                        } else if (type === 'observations') {
-                            title = `${entry.category || 'Observation'} Logged`;
-                            subtitle = entry.type || 'Observation recorded';
-                        } else if (type === 'incidents') {
-                            title = 'Incident Reported';
-                            subtitle = entry.title || 'Incident details saved';
-                        }
-
-                        const d = new Date(entry.timestamp);
-
-                        allItems.push({
-                            id: entry.id || Math.random().toString(),
-                            type: type as any,
-                            title,
-                            subtitle,
-                            timestamp: d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                            timestampDate: d,
-                        });
-                    }
-                } catch { }
-            }
-
-            // Sort newest first
+            const rows = await fetchActivityFeedFromAuditLog(uid, selectedProject.id, projectName, {
+                limit: 300,
+            });
+            const allItems = rows.map(auditRowToActivityItem);
             allItems.sort((a, b) => b.timestampDate.getTime() - a.timestampDate.getTime());
 
-            // Filter
             let filtered = allItems;
             if (filter === 'today') {
                 const today = new Date();
-                filtered = allItems.filter(a => a.timestampDate.toDateString() === today.toDateString());
+                filtered = allItems.filter((a) => a.timestampDate.toDateString() === today.toDateString());
             } else if (filter === 'week') {
                 const now = new Date();
                 const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-                filtered = allItems.filter(a => a.timestampDate >= weekAgo);
+                filtered = allItems.filter((a) => a.timestampDate >= weekAgo);
             }
 
             setActivities(filtered);
-        } catch (error) {
-            console.error('Error loading activities:', error);
+        } catch (e) {
+            console.error('Error loading activities:', e);
             setActivities([]);
         }
-    }, [filter]);
+    }, [filter, session?.user?.id, selectedProject?.id, selectedProject?.name]);
 
-    useFocusEffect(useCallback(() => {
-        loadActivities();
-    }, [loadActivities]));
+    useFocusEffect(
+        useCallback(() => {
+            loadActivities();
+        }, [loadActivities])
+    );
 
     const onRefresh = async () => {
         setRefreshing(true);
@@ -167,14 +242,18 @@ export default function ActivityScreen() {
         { key: 'week', label: 'This Week' },
     ];
 
+    const signedOut = !session?.user?.id;
+    const noProject =
+        !!session?.user?.id &&
+        (!selectedProject?.name?.trim() || selectedProject.name === NO_PROJECT);
+
     return (
         <SafeAreaView style={styles.container} edges={['top']}>
-            {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>Activity</Text>
+                <Text style={styles.titleSub}>Your submissions on this project</Text>
             </View>
 
-            {/* Filter Tabs */}
             <View style={styles.filterRow}>
                 {FILTERS.map((f) => (
                     <TouchableOpacity
@@ -182,9 +261,7 @@ export default function ActivityScreen() {
                         style={[styles.filterTab, filter === f.key && styles.filterTabActive]}
                         onPress={() => setFilter(f.key)}
                     >
-                        <Text style={[styles.filterLabel, filter === f.key && styles.filterLabelActive]}>
-                            {f.label}
-                        </Text>
+                        <Text style={[styles.filterLabel, filter === f.key && styles.filterLabelActive]}>{f.label}</Text>
                     </TouchableOpacity>
                 ))}
             </View>
@@ -193,22 +270,38 @@ export default function ActivityScreen() {
                 style={styles.scrollView}
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
-                refreshControl={
-                    <RefreshControl
-                        refreshing={refreshing}
-                        onRefresh={onRefresh}
-                        tintColor={COLORS.brand}
-                    />
-                }
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.brand} />}
             >
-                {activities.length === 0 ? (
+                {signedOut ? (
+                    <View style={styles.emptyState}>
+                        <View style={styles.emptyIcon}>
+                            <Ionicons name="person-outline" size={48} color={COLORS.subtitle} />
+                        </View>
+                        <Text style={styles.emptyTitle}>Sign in to see your activity</Text>
+                        <Text style={styles.emptySubtitle}>
+                            Your field submissions are recorded under your account. Log in to view your personal activity
+                            feed.
+                        </Text>
+                    </View>
+                ) : noProject ? (
+                    <View style={styles.emptyState}>
+                        <View style={styles.emptyIcon}>
+                            <Ionicons name="folder-open-outline" size={48} color={COLORS.subtitle} />
+                        </View>
+                        <Text style={styles.emptyTitle}>Select a project</Text>
+                        <Text style={styles.emptySubtitle}>
+                            Activity is filtered from the audit log for the current project and your account. Choose a
+                            project on the Home tab first.
+                        </Text>
+                    </View>
+                ) : activities.length === 0 ? (
                     <View style={styles.emptyState}>
                         <View style={styles.emptyIcon}>
                             <Ionicons name="time-outline" size={48} color={COLORS.subtitle} />
                         </View>
-                        <Text style={styles.emptyTitle}>No Activity Yet</Text>
+                        <Text style={styles.emptyTitle}>No activity yet</Text>
                         <Text style={styles.emptySubtitle}>
-                            Start logging your field work — notes, chemicals, metrics, and more will appear here.
+                            When you save notes, chemicals, metrics, and other reports while signed in, they appear here.
                         </Text>
                     </View>
                 ) : (
@@ -237,6 +330,7 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#1C1C1E' },
     header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
     title: { color: '#fff', fontSize: 28, fontWeight: '700' },
+    titleSub: { color: COLORS.subtitle, fontSize: 13, marginTop: 4, lineHeight: 18 },
 
     filterRow: {
         flexDirection: 'row',

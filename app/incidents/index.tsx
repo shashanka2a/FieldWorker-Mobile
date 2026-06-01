@@ -19,6 +19,7 @@ import {
     deleteIncident,
     IncidentEntry,
 } from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchIncidentsFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
@@ -50,8 +51,10 @@ export default function IncidentsListScreen() {
             selectedProject?.id ?? '',
             selectedProject?.name ?? ''
         );
-        const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
-        setIncidents(data.reverse());
+        const pred = matchProjectPredicate<IncidentEntry>(selectedProject?.name);
+        const merged = mergeLocalRemotePreferSupabase(localData, remoteData, pred);
+        merged.sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
+        setIncidents(merged.reverse());
     }, [selectedDate, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadIncidents(); }, [loadIncidents]));

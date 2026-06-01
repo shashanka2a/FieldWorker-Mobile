@@ -10,16 +10,20 @@ import {
     ActivityIndicator,
     Modal,
     Pressable,
+    Image,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
+import { getDateKey } from '@/lib/dailyReportStorage';
 import { getTemplateById } from '@/lib/safetyTemplates';
-import { addConductedSafetyTalk } from '@/lib/safetyStorage';
+import { addConductedSafetyTalk, attendeesToStoredRows } from '@/lib/safetyStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fetchEmployeesFromSupabase } from '@/lib/supabaseSync';
+import { fetchEmployeesFromSupabase, fetchSafetyTalkTemplateByIdFromSupabase } from '@/lib/supabaseSync';
+import { generateCombinedSafetyTalkPdf } from '@/lib/safetyTalkPdf';
+import { KeyboardAwareScrollView, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -33,25 +37,45 @@ const COLORS = {
 
 interface Attendee {
     name: string;
-    signature: string;
+    company?: string;
+    signature?: string;
 }
 
 export default function DigitalSignaturesScreen() {
-    const { selectedProject } = useAppContext();
+    const { selectedDate, selectedProject } = useAppContext();
     const { templateId } = useLocalSearchParams<{ templateId?: string }>();
-    const template = getTemplateById(templateId ?? '');
+    const fallbackTemplate = getTemplateById(templateId ?? '');
+    const [remoteTemplate, setRemoteTemplate] = useState<typeof fallbackTemplate | null>(null);
+    const template = remoteTemplate ?? fallbackTemplate;
     const sigRef = useRef<any>(null);
+    const pendingSaveAfterCaptureRef = useRef(false);
+    const captureTargetIdxRef = useRef<number | null>(null);
 
     const [attendees, setAttendees] = useState<Attendee[]>([]);
-    const [currentName, setCurrentName] = useState('');
-    const [draftSignature, setDraftSignature] = useState<string>('');
-    const [draftCaptured, setDraftCaptured] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [showEmployeePicker, setShowEmployeePicker] = useState(false);
     const [employeesLoading, setEmployeesLoading] = useState(false);
     const [employees, setEmployees] = useState<{ name: string; company: string }[]>([]);
     const [employeeSearch, setEmployeeSearch] = useState('');
+    const [activeAttendeeIdx, setActiveAttendeeIdx] = useState<number | null>(null);
+    const [signatureData, setSignatureData] = useState<string>('');
+    const [sigCaptured, setSigCaptured] = useState(false);
+    const [capturingSave, setCapturingSave] = useState(false);
+
+    useEffect(() => {
+        let mounted = true;
+        const id = (templateId ?? '').trim();
+        if (!id) return;
+        (async () => {
+            const t = await fetchSafetyTalkTemplateByIdFromSupabase(id);
+            if (!mounted) return;
+            if (t) setRemoteTemplate(t);
+        })();
+        return () => {
+            mounted = false;
+        };
+    }, [templateId]);
 
     const filteredEmployees = useMemo(() => {
         const q = employeeSearch.trim().toLowerCase();
@@ -80,61 +104,147 @@ export default function DigitalSignaturesScreen() {
     }, [showEmployeePicker, selectedProject.id, selectedProject.name]);
 
     const clearDraftSignature = useCallback(() => {
+        pendingSaveAfterCaptureRef.current = false;
+        captureTargetIdxRef.current = null;
+        setCapturingSave(false);
         sigRef.current?.clearSignature();
-        setDraftSignature('');
-        setDraftCaptured(false);
+        setSignatureData('');
+        setSigCaptured(false);
     }, []);
 
-    /** Auto-capture when user lifts finger (so they don't have to tap Confirm inside the WebView). */
-    const handleSignatureEnd = useCallback(() => {
-        sigRef.current?.readSignature();
-    }, []);
-
-    const handleCapture = (sig: string) => {
-        setDraftSignature(sig);
-        setDraftCaptured(true);
-    };
-
-    const addAttendeeFromDraft = useCallback(() => {
-        if (!currentName.trim()) {
-            Alert.alert('Required', 'Enter the attendee name first.');
-            return;
+    const handleCapture = useCallback((sig: string) => {
+        setSignatureData(sig);
+        setSigCaptured(true);
+        if (pendingSaveAfterCaptureRef.current) {
+            pendingSaveAfterCaptureRef.current = false;
+            setCapturingSave(false);
+            const idx = captureTargetIdxRef.current;
+            captureTargetIdxRef.current = null;
+            if (idx !== null) {
+                setAttendees((prev) => prev.map((a, i) => (i === idx ? { ...a, signature: sig } : a)));
+                setActiveAttendeeIdx(null);
+            }
         }
-        if (!draftCaptured || !draftSignature) {
+    }, []);
+
+    const handleSignatureEmpty = useCallback(() => {
+        setSignatureData('');
+        setSigCaptured(false);
+        if (pendingSaveAfterCaptureRef.current) {
+            pendingSaveAfterCaptureRef.current = false;
+            captureTargetIdxRef.current = null;
+            setCapturingSave(false);
             Alert.alert('Required', 'Please draw a signature first.');
-            return;
         }
-        setAttendees((prev) => [...prev, { name: currentName.trim(), signature: draftSignature }]);
-        setCurrentName('');
-        clearDraftSignature();
-    }, [clearDraftSignature, currentName, draftCaptured, draftSignature]);
+    }, []);
 
     const removeAttendee = (idx: number) => {
         setAttendees((prev) => prev.filter((_, i) => i !== idx));
     };
 
+    const openAttendeeSignature = useCallback((idx: number) => {
+        const att = attendees[idx];
+        pendingSaveAfterCaptureRef.current = false;
+        captureTargetIdxRef.current = null;
+        setCapturingSave(false);
+        setActiveAttendeeIdx(idx);
+        setSignatureData(att.signature ?? '');
+        setSigCaptured(!!att.signature);
+    }, [attendees]);
+
+    const closeSignatureModal = useCallback(() => {
+        pendingSaveAfterCaptureRef.current = false;
+        captureTargetIdxRef.current = null;
+        setCapturingSave(false);
+        setActiveAttendeeIdx(null);
+    }, []);
+
+    const saveAttendeeSignature = useCallback(() => {
+        if (activeAttendeeIdx === null || capturingSave) return;
+        if (sigCaptured && signatureData) {
+            setAttendees((prev) =>
+                prev.map((a, i) => (i === activeAttendeeIdx ? { ...a, signature: signatureData } : a))
+            );
+            setActiveAttendeeIdx(null);
+            return;
+        }
+        setCapturingSave(true);
+        pendingSaveAfterCaptureRef.current = true;
+        captureTargetIdxRef.current = activeAttendeeIdx;
+        try {
+            sigRef.current?.readSignature();
+        } catch {
+            pendingSaveAfterCaptureRef.current = false;
+            captureTargetIdxRef.current = null;
+            setCapturingSave(false);
+            Alert.alert('Error', 'Could not read signature. Try again.');
+        }
+    }, [activeAttendeeIdx, capturingSave, sigCaptured, signatureData]);
+
     const handleDone = async () => {
-        if (attendees.length === 0) {
+        if (attendees.length === 0 || attendees.every((a) => !a.signature)) {
             Alert.alert('Required', 'Collect at least one signature before completing.');
+            return;
+        }
+        if (!selectedProject.id) {
+            Alert.alert(
+                'Select a project',
+                'Choose a field project from the app home screen before completing this safety talk.'
+            );
             return;
         }
         setSaving(true);
         try {
-            const now = new Date();
-            const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            // Save signature data
-            const key = `safety_sig_digital_${templateId}_${Date.now()}`;
-            await AsyncStorage.setItem(key, JSON.stringify({
-                templateId,
-                templateName: template?.name ?? '',
-                attendees,
-                completedAt: new Date().toISOString(),
-            }));
-            if (templateId) {
-                await addConductedSafetyTalk(dateKey, templateId, template?.name ?? '');
+            const dateKey = getDateKey(selectedDate);
+            const completedAt = new Date().toISOString();
+            const resolvedTemplateName = template?.name ?? fallbackTemplate?.name ?? '';
+
+            let combinedPdfUrl: string | null = null;
+            const templatePdfUrl = template?.pdfUrl ?? '';
+            if (templatePdfUrl) {
+                try {
+                    const combined = await generateCombinedSafetyTalkPdf({
+                        templateName: resolvedTemplateName || 'Safety Talk',
+                        templatePdfUrl,
+                        completedAtIso: completedAt,
+                        attendees,
+                    });
+                    combinedPdfUrl = combined.uploadedUrl;
+                } catch {
+                    // Best-effort: signatures are still saved even if PDF merge fails.
+                    combinedPdfUrl = null;
+                }
             }
+
+            const attendeeRows = attendeesToStoredRows(attendees);
+
+            // Create the completed talk entry (syncs attendees + PDF URL to Supabase) then persist full payload locally.
+            const talkId = templateId
+                ? await addConductedSafetyTalk(
+                      dateKey,
+                      templateId,
+                      resolvedTemplateName,
+                      selectedProject.id,
+                      selectedProject.name,
+                      {
+                          attendees: attendeeRows,
+                          attendancePdfUrl: combinedPdfUrl,
+                      }
+                  )
+                : Date.now().toString();
+            await AsyncStorage.setItem(`safety_talk_completed_${talkId}`, JSON.stringify({
+                talkId,
+                templateId,
+                templateName: resolvedTemplateName,
+                dateKey,
+                attendees,
+                attendeeCount: attendees.length,
+                completedAt,
+                combinedPdfUrl,
+            }));
             setSaved(true);
-            setTimeout(() => router.replace('/safety?tab=conducted' as any), 500);
+            // Jump straight to the completed talk preview (no back-tracing through steps).
+            setTimeout(() => router.replace(`/safety/read?talkId=${talkId}` as any), 350);
         } catch {
             Alert.alert('Error', 'Failed to save signatures. Please try again.');
         } finally {
@@ -148,110 +258,81 @@ export default function DigitalSignaturesScreen() {
                 title="Digital Signatures"
                 subtitle={template?.name ?? 'Safety Talk'}
                 rightElement={
-                    attendees.length > 0 ? (
+                    attendees.some((a) => !!a.signature) ? (
                         <TouchableOpacity style={styles.doneBtn} onPress={handleDone} disabled={saving}>
                             {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.doneBtnText}>Done</Text>}
                         </TouchableOpacity>
                     ) : null
                 }
             />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <ScrollView
+                style={styles.scroll}
+                contentContainerStyle={styles.scrollContent}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+            >
 
-                {/* Attendee list */}
-                {attendees.length > 0 && (
-                    <View style={styles.section}>
-                        <Text style={styles.sectionTitle}>Signed Attendees ({attendees.length})</Text>
-                        {attendees.map((att, idx) => (
-                            <View key={idx} style={styles.attendeeRow}>
-                                <View style={styles.attendeeAvatar}>
-                                    <Text style={styles.attendeeInitial}>{att.name[0].toUpperCase()}</Text>
-                                </View>
-                                <Text style={styles.attendeeName}>{att.name}</Text>
-                                <Ionicons name="checkmark-circle" size={18} color={COLORS.success} />
-                                <TouchableOpacity onPress={() => removeAttendee(idx)}>
-                                    <Ionicons name="close-circle" size={18} color={COLORS.danger} />
-                                </TouchableOpacity>
-                            </View>
-                        ))}
-                    </View>
-                )}
-
-                {/* Add new attendee */}
                 <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Add Attendee</Text>
-                    <TextInput
-                        style={styles.nameInput}
-                        value={currentName}
-                        onChangeText={setCurrentName}
-                        placeholder="Attendee name"
-                        placeholderTextColor={COLORS.subtitle}
-                        autoCapitalize="words"
-                    />
-                    <TouchableOpacity
-                        style={styles.pickBtn}
-                        onPress={() => {
-                            setEmployeeSearch('');
-                            setShowEmployeePicker(true);
-                        }}
-                    >
-                        <Ionicons name="people-outline" size={18} color={COLORS.brand} />
-                        <Text style={styles.pickBtnText}>Pick from employee directory</Text>
-                    </TouchableOpacity>
-
-                    <Text style={styles.canvasLabel}>Signature</Text>
-                    <View style={styles.canvasWrap}>
-                        <SignatureCanvas
-                            ref={sigRef}
-                            onOK={handleCapture}
-                            onEmpty={() => {
-                                setDraftSignature('');
-                                setDraftCaptured(false);
-                            }}
-                            onClear={() => {
-                                setDraftSignature('');
-                                setDraftCaptured(false);
-                            }}
-                            onEnd={handleSignatureEnd}
-                            minDistance={2}
-                            descriptionText="Draw signature (lift finger to capture)"
-                            clearText="Clear"
-                            confirmText={draftCaptured ? '✓ Captured' : 'Confirm'}
-                            backgroundColor="#FFFFFF"
-                            penColor="#111111"
-                            dataURL={draftSignature}
-                            webStyle={`
-                body { background: #FFFFFF; margin: 0; }
-                .m-signature-pad { box-shadow: none; border: none; background: #FFFFFF; }
-                .m-signature-pad--body { background: #FFFFFF; border: none; border-radius: 12px; }
-                .m-signature-pad--footer { background: #FFFFFF; padding: 8px; }
-                .button { background: #FF6633; border-radius: 10px; color: white; font-weight: 700; padding: 10px 20px; }
-                .button.clear { background: #E5E7EB; color: #111827; }
-              `}
-                            style={styles.signatureCanvas}
-                        />
-                    </View>
-
-                    <View style={styles.sigActionRow}>
+                    <View style={styles.attendeeHeaderRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={styles.sectionTitle}>Attendees: {attendees.length}</Text>
+                            <Text style={styles.sectionSubtitle}>
+                                Please pass your device to collect signatures from attendees
+                            </Text>
+                        </View>
                         <TouchableOpacity
-                            style={[styles.sigActionBtn, styles.sigClearBtn, !draftCaptured && { opacity: 0.7 }]}
-                            onPress={clearDraftSignature}
+                            style={styles.addAttendeeBtn}
+                            onPress={() => {
+                                setEmployeeSearch('');
+                                setShowEmployeePicker(true);
+                            }}
+                            activeOpacity={0.85}
                         >
-                            <Ionicons name="refresh" size={16} color="#111827" />
-                            <Text style={styles.sigClearText}>Clear</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.sigActionBtn, styles.sigAddBtn, (!currentName.trim() || !draftCaptured) && { opacity: 0.6 }]}
-                            onPress={addAttendeeFromDraft}
-                            disabled={!currentName.trim() || !draftCaptured}
-                        >
-                            <Ionicons name="person-add" size={16} color="#fff" />
-                            <Text style={styles.sigAddText}>Add Signature</Text>
+                            <Ionicons name="person-add-outline" size={18} color={COLORS.brand} />
+                            <Text style={styles.addAttendeeText}>Add attendee</Text>
                         </TouchableOpacity>
                     </View>
+
+                    {attendees.length === 0 ? (
+                        <View style={styles.emptyAttendees}>
+                            <Ionicons name="people-outline" size={40} color={COLORS.subtitle} />
+                            <Text style={styles.emptyAttendeesTitle}>No attendees yet</Text>
+                            <Text style={styles.emptyAttendeesSubtitle}>
+                                Tap “Add attendee” to select employees from the directory.
+                            </Text>
+                        </View>
+                    ) : (
+                        <View style={{ gap: 10 }}>
+                            <Text style={styles.groupLabel}>All other employees</Text>
+                            {attendees.map((att, idx) => {
+                                const signed = !!att.signature;
+                                return (
+                                    <TouchableOpacity
+                                        key={`${att.name}-${att.company ?? ''}-${idx}`}
+                                        style={styles.attendeeCard}
+                                        onPress={() => openAttendeeSignature(idx)}
+                                        activeOpacity={0.85}
+                                    >
+                                        <View style={styles.attendeeAvatar}>
+                                            <Text style={styles.attendeeInitial}>{att.name[0]?.toUpperCase() ?? '?'}</Text>
+                                        </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.attendeeName} numberOfLines={1}>{att.name}</Text>
+                                            <Text style={styles.attendeeCompany} numberOfLines={1}>{att.company || '—'}</Text>
+                                        </View>
+                                        <Text style={signed ? styles.signedPill : styles.unsignedPill}>
+                                            {signed ? 'Signed' : 'Pending'}
+                                        </Text>
+                                        <Ionicons name="chevron-forward" size={16} color={COLORS.subtitle} />
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+                    )}
                 </View>
 
                 {/* Complete button */}
-                {attendees.length > 0 && (
+                {attendees.some((a) => !!a.signature) && (
                     <TouchableOpacity
                         style={[styles.completeBtn, (saving || saved) && { opacity: 0.7 }]}
                         onPress={handleDone}
@@ -264,6 +345,87 @@ export default function DigitalSignaturesScreen() {
                 )}
             </ScrollView>
 
+            {/* Signature modal */}
+            <Modal
+                visible={activeAttendeeIdx !== null}
+                transparent
+                animationType="slide"
+                onRequestClose={closeSignatureModal}
+            >
+                <Pressable style={styles.sheetBackdrop} onPress={closeSignatureModal}>
+                    <Pressable style={styles.signatureSheet} onPress={(e) => e.stopPropagation()}>
+                        <View style={styles.sheetHandle} />
+                        <Text style={styles.sheetTitle}>Collect signature</Text>
+                        <Text style={styles.sigName}>
+                            {activeAttendeeIdx !== null ? attendees[activeAttendeeIdx]?.name : ''}
+                        </Text>
+                        <Text style={styles.sigHint}>
+                            {sigCaptured
+                                ? 'Signature saved for this attendee.'
+                                : 'Draw in the box below, then tap Save signature.'}
+                        </Text>
+
+                        <View style={[styles.canvasWrap, sigCaptured && styles.canvasCaptured]}>
+                            {sigCaptured && !!signatureData ? (
+                                <Image source={{ uri: signatureData }} style={styles.sigPreviewImage} resizeMode="contain" />
+                            ) : (
+                                <SignatureCanvas
+                                    ref={sigRef}
+                                    onOK={handleCapture}
+                                    onEmpty={handleSignatureEmpty}
+                                    onClear={() => {
+                                        setSignatureData('');
+                                        setSigCaptured(false);
+                                    }}
+                                    minDistance={2}
+                                    descriptionText="Draw here — multiple strokes OK"
+                                    clearText="Clear"
+                                    confirmText="Confirm"
+                                    backgroundColor="#FFFFFF"
+                                    penColor="#111111"
+                                    dataURL={signatureData}
+                                    webStyle={`
+                        body { background: #FFFFFF; margin: 0; }
+                        .m-signature-pad { box-shadow: none; border: none; background: #FFFFFF; height: 100%; display: flex; flex-direction: column; }
+                        .m-signature-pad--body { flex: 1; min-height: 0; background: #FFFFFF; border: none; border-radius: 12px; }
+                        .m-signature-pad--footer { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden; }
+                        .button { background: #FF6633; border-radius: 10px; color: white; font-weight: 700; padding: 10px 20px; }
+                        .button.clear { background: #E5E7EB; color: #111827; }
+                      `}
+                                    style={styles.signatureCanvas}
+                                />
+                            )}
+                        </View>
+
+                        <TouchableOpacity
+                            style={[styles.sigSavePrimaryBtn, capturingSave && { opacity: 0.6 }]}
+                            onPress={saveAttendeeSignature}
+                            disabled={capturingSave}
+                            accessibilityRole="button"
+                            accessibilityLabel="Save signature"
+                        >
+                            {capturingSave ? (
+                                <ActivityIndicator color="#fff" />
+                            ) : (
+                                <>
+                                    <Ionicons name="checkmark-circle" size={22} color="#fff" />
+                                    <Text style={styles.sigSavePrimaryText}>Save signature</Text>
+                                </>
+                            )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.sigClearLinkBtn}
+                            onPress={clearDraftSignature}
+                            accessibilityRole="button"
+                            accessibilityLabel="Clear signature"
+                        >
+                            <Ionicons name="refresh" size={16} color={COLORS.subtitle} />
+                            <Text style={styles.sigClearLinkText}>Clear and redraw</Text>
+                        </TouchableOpacity>
+                    </Pressable>
+                </Pressable>
+            </Modal>
+
             <Modal
                 visible={showEmployeePicker}
                 transparent
@@ -272,40 +434,48 @@ export default function DigitalSignaturesScreen() {
             >
                 <Pressable style={styles.sheetBackdrop} onPress={() => setShowEmployeePicker(false)}>
                     <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-                        <View style={styles.sheetHandle} />
-                        <Text style={styles.sheetTitle}>Employees</Text>
-                        <View style={styles.searchWrap}>
-                            <Ionicons name="search-outline" size={16} color={COLORS.subtitle} />
-                            <TextInput
-                                style={styles.searchInput}
-                                value={employeeSearch}
-                                onChangeText={setEmployeeSearch}
-                                placeholder="Search employees..."
-                                placeholderTextColor={COLORS.subtitle}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                            />
-                            {employeeSearch !== '' ? (
-                                <TouchableOpacity onPress={() => setEmployeeSearch('')}>
-                                    <Ionicons name="close-circle" size={16} color={COLORS.subtitle} />
-                                </TouchableOpacity>
-                            ) : null}
-                        </View>
-
-                        {employeesLoading ? (
-                            <View style={styles.sheetLoading}>
-                                <ActivityIndicator color={COLORS.brand} />
+                        <KeyboardAwareScrollView style={{ maxHeight: 480 }} bottomPadding={24}>
+                            <View style={styles.sheetHandle} />
+                            <Text style={styles.sheetTitle}>Employees</Text>
+                            <View style={styles.searchWrap}>
+                                <Ionicons name="search-outline" size={16} color={COLORS.subtitle} />
+                                <ScrollInputField style={{ flex: 1 }}>
+                                    <TextInput
+                                        style={styles.searchInput}
+                                        value={employeeSearch}
+                                        onChangeText={setEmployeeSearch}
+                                        placeholder="Search employees..."
+                                        placeholderTextColor={COLORS.subtitle}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                    />
+                                </ScrollInputField>
+                                {employeeSearch !== '' ? (
+                                    <TouchableOpacity onPress={() => setEmployeeSearch('')}>
+                                        <Ionicons name="close-circle" size={16} color={COLORS.subtitle} />
+                                    </TouchableOpacity>
+                                ) : null}
                             </View>
-                        ) : filteredEmployees.length === 0 ? (
-                            <Text style={styles.sheetEmpty}>No employees found (or access blocked by RLS).</Text>
-                        ) : (
-                            <ScrollView style={{ maxHeight: 360 }}>
-                                {filteredEmployees.map((emp) => (
+
+                            {employeesLoading ? (
+                                <View style={styles.sheetLoading}>
+                                    <ActivityIndicator color={COLORS.brand} />
+                                </View>
+                            ) : filteredEmployees.length === 0 ? (
+                                <Text style={styles.sheetEmpty}>No employees found (or access blocked by RLS).</Text>
+                            ) : (
+                                filteredEmployees.map((emp) => (
                                     <TouchableOpacity
-                                        key={emp.name}
+                                        key={`${emp.name}-${emp.company}`}
                                         style={styles.empRow}
                                         onPress={() => {
-                                            setCurrentName(emp.name);
+                                            setAttendees((prev) => {
+                                                const exists = prev.some(
+                                                    (a) => a.name === emp.name && (a.company ?? '') === (emp.company ?? '')
+                                                );
+                                                if (exists) return prev;
+                                                return [...prev, { name: emp.name, company: emp.company }];
+                                            });
                                             setShowEmployeePicker(false);
                                         }}
                                     >
@@ -317,13 +487,13 @@ export default function DigitalSignaturesScreen() {
                                             <Text style={styles.empCompany}>{emp.company || '—'}</Text>
                                         </View>
                                     </TouchableOpacity>
-                                ))}
-                            </ScrollView>
-                        )}
+                                ))
+                            )}
 
-                        <TouchableOpacity style={styles.sheetDoneBtn} onPress={() => setShowEmployeePicker(false)}>
-                            <Text style={styles.sheetDoneText}>Done</Text>
-                        </TouchableOpacity>
+                            <TouchableOpacity style={styles.sheetDoneBtn} onPress={() => setShowEmployeePicker(false)}>
+                                <Text style={styles.sheetDoneText}>Done</Text>
+                            </TouchableOpacity>
+                        </KeyboardAwareScrollView>
                     </Pressable>
                 </Pressable>
             </Modal>
@@ -339,29 +509,55 @@ const styles = StyleSheet.create({
     doneBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
     section: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     sectionTitle: { color: COLORS.brand, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
-    attendeeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    sectionSubtitle: { color: COLORS.subtitle, fontSize: 13, marginTop: 6, lineHeight: 18 },
+    attendeeHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    addAttendeeBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: COLORS.brand + '60', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: COLORS.surface },
+    addAttendeeText: { color: COLORS.brand, fontSize: 13, fontWeight: '700' },
+    groupLabel: { color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 6 },
+    attendeeCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, backgroundColor: COLORS.surface, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
     attendeeAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: COLORS.brand + '25', alignItems: 'center', justifyContent: 'center' },
     attendeeInitial: { color: COLORS.brand, fontSize: 16, fontWeight: '700' },
-    attendeeName: { flex: 1, color: '#fff', fontSize: 15, fontWeight: '500' },
-    nameInput: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, color: '#fff', fontSize: 15, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
-    pickBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start', paddingVertical: 8 },
-    pickBtnText: { color: COLORS.brand, fontSize: 13, fontWeight: '700' },
-    canvasLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },
+    attendeeName: { color: '#fff', fontSize: 15, fontWeight: '700' },
+    attendeeCompany: { color: COLORS.subtitle, fontSize: 12, marginTop: 2 },
+    signedPill: { color: COLORS.success, fontSize: 13, fontWeight: '700', marginRight: 6 },
+    unsignedPill: { color: COLORS.subtitle, fontSize: 13, fontWeight: '700', marginRight: 6 },
+    emptyAttendees: { alignItems: 'center', paddingVertical: 18, gap: 10 },
+    emptyAttendeesTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    emptyAttendeesSubtitle: { color: COLORS.subtitle, fontSize: 13, textAlign: 'center', lineHeight: 18 },
     canvasWrap: { height: 260, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#FFFFFF', backgroundColor: '#FFFFFF' },
+    canvasCaptured: { borderColor: COLORS.success },
     signatureCanvas: { flex: 1 },
-    sigActionRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-    sigActionBtn: { flex: 1, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-    sigClearBtn: { backgroundColor: '#E5E7EB' },
-    sigAddBtn: { backgroundColor: COLORS.brand },
-    sigClearText: { color: '#111827', fontSize: 14, fontWeight: '700' },
-    sigAddText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+    sigPreviewImage: { flex: 1, width: '100%', height: '100%', backgroundColor: '#FFFFFF' },
+    sigHint: { color: COLORS.subtitle, fontSize: 13, lineHeight: 18, textAlign: 'center', marginBottom: 10 },
+    sigSavePrimaryBtn: {
+        backgroundColor: COLORS.brand,
+        borderRadius: 14,
+        paddingVertical: 16,
+        marginTop: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+    },
+    sigSavePrimaryText: { color: '#fff', fontSize: 17, fontWeight: '700' },
+    sigClearLinkBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        paddingVertical: 12,
+        marginTop: 4,
+    },
+    sigClearLinkText: { color: COLORS.subtitle, fontSize: 14, fontWeight: '600' },
     completeBtn: { backgroundColor: COLORS.success, borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: COLORS.success, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 6 },
     completeBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
     sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
     sheet: { backgroundColor: COLORS.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
+    signatureSheet: { backgroundColor: COLORS.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
     sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: 12 },
     sheetTitle: { color: COLORS.subtitle, fontSize: 13, fontWeight: '700', textAlign: 'center', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.6 },
+    sigName: { color: '#fff', fontSize: 18, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
     searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: COLORS.surface, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border, marginBottom: 10 },
     searchInput: { flex: 1, color: '#fff', fontSize: 16 },
     sheetLoading: { paddingVertical: 24, alignItems: 'center' },

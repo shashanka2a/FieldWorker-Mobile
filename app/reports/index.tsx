@@ -10,7 +10,9 @@ import {
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { useAppContext } from '@/context/AppContext';
 import { getSignedReportDateKeys, getSignedReport, SignedReportEntry } from '@/lib/dailyReportStorage';
+import { fetchSignedDailyReportSummariesForProject } from '@/lib/supabaseSync';
 
 const COLORS = {
     brand: '#FF6633',
@@ -27,19 +29,27 @@ interface ReportSummary {
 }
 
 export default function ReportsScreen() {
+    const { selectedProject } = useAppContext();
     const [reports, setReports] = useState<ReportSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
 
     const loadReports = useCallback(async () => {
+        const pid = selectedProject?.id?.trim() ?? '';
+        if (pid && selectedProject.name && selectedProject.name !== 'No Project Selected') {
+            const rows = await fetchSignedDailyReportSummariesForProject(pid, selectedProject.name);
+            setReports(rows);
+            return;
+        }
+
         const keys = await getSignedReportDateKeys();
         const entries = await Promise.all(
             keys.map(async (k) => {
                 const entry = await getSignedReport(k);
-                return entry ? { dateKey: k, entry } : null;
+                return entry?.isSigned ? { dateKey: k, entry } : null;
             })
         );
         setReports(entries.filter(Boolean) as ReportSummary[]);
-    }, []);
+    }, [selectedProject?.id, selectedProject?.name]);
 
     useEffect(() => { loadReports(); }, [loadReports]);
 

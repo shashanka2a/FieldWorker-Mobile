@@ -1,12 +1,13 @@
 import * as Print from 'expo-print';
 import { uploadImageToCloudinary } from './cloudinary';
 import { ReportData, EquipmentChecklistEntry } from './dailyReportStorage';
+import { surveyAnswerTone } from './surveyQuestionSemantics';
 
 export async function generateReportPdf(report: ReportData, isSigned: boolean = false): Promise<string | null> {
     const dateLabel = report.date.toLocaleDateString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
     });
-    const fieldWorker = report.signed?.preparedBy || 'Field Worker';
+    const fieldWorker = report.signed?.preparedBy || '—';
 
     const html = `
 <!DOCTYPE html>
@@ -119,13 +120,18 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
     ${report.equipment.filter(e => (e as any).type === 'checklist').length > 0 ? `
     <div class="section">
         <div class="section-title">Equipment Checklist</div>
-        ${report.equipment.filter(e => (e as any).type === 'checklist').map(e => {
+        ${report.equipment.filter(e => (e as any).type === 'checklist').map((e, i) => {
             const cl = e as EquipmentChecklistEntry;
-            return `
+            const divider = i > 0 ? '<div style="height:1px;background:#eee;margin:12px 0;"></div>' : '';
+            return `${divider}
                 <div class="row"><span class="row-label">Machine #</span><span class="row-value">${cl.formData.machineNumber || '—'}</span></div>
+                <div class="row"><span class="row-label">Machine Type</span><span class="row-value">${cl.formData.machineType || '—'}</span></div>
                 <div class="row"><span class="row-label">Operator</span><span class="row-value">${cl.formData.operatorName || '—'}</span></div>
-                <div class="row"><span class="row-label">ASV Hours</span><span class="row-value">${cl.formData.asvHours || '—'}</span></div>
+                <div class="row"><span class="row-label">Hours</span><span class="row-value">${cl.formData.asvHours || '—'}</span></div>
                 <div class="row"><span class="row-label">Oil/Coolant</span><span class="row-value">${cl.formData.motorOil || 'OK'} / ${cl.formData.coolant || 'OK'}</span></div>
+                ${(cl.formData as any).attachmentApplicable === 'Yes' || (cl.formData as any).attachmentName ? `
+                <div class="row"><span class="row-label">Attachment</span><span class="row-value">${(cl.formData as any).attachmentName || '—'}${(cl.formData as any).attachmentNumber ? ` (#${(cl.formData as any).attachmentNumber})` : ''}</span></div>
+                ` : ''}
                 ${cl.formData.repairsNotes ? `<div class="row"><span class="row-label">Issues</span><span class="row-value">${cl.formData.repairsNotes}</span></div>` : ''}
                 ${cl.photos && cl.photos.length > 0 ? `
                 <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding: 0 10px;">
@@ -181,12 +187,19 @@ export async function generateReportPdf(report: ReportData, isSigned: boolean = 
     ${report.survey.length > 0 ? `
     <div class="section">
         <div class="section-title">Site Survey Highlights</div>
-        ${report.survey[report.survey.length - 1].questions.filter(q => q.answer === 'Yes' || q.answer === 'No').map(q => `
+        ${report.survey[report.survey.length - 1].questions
+            .filter((q) => q.answer === 'Yes' || q.answer === 'No')
+            .map((q) => {
+                const tone = surveyAnswerTone(q.question, q.answer);
+                const color = tone === 'good' ? '#30D158' : tone === 'bad' ? '#FF453A' : '#FF6633';
+                return `
             <div class="survey-row">
                 <div class="survey-q">${q.question}</div>
-                <div class="survey-a" style="color: ${q.answer === 'Yes' ? '#FF453A' : '#30D158'}">${q.answer}</div>
+                <div class="survey-a" style="color: ${color}">${q.answer}</div>
             </div>
-        `).join('')}
+        `;
+            })
+            .join('')}
     </div>
     ` : ''}
 

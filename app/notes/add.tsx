@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     View,
     Text,
@@ -9,14 +9,20 @@ import {
     Alert,
     Image,
     ActivityIndicator,
+    Modal,
+    KeyboardAvoidingView,
+    Platform,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 import { useAppContext } from '@/context/AppContext';
 import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider';
-import { createUuid, getDateKey, getTimestampForReportingDay, saveNotes, getNotesForDate } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getSubmittedAtIso, saveNotes, getNotesForDate } from '@/lib/dailyReportStorage';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
 
 const COLORS = {
     brand: '#FF6633',
@@ -41,36 +47,96 @@ export default function AddNoteScreen() {
     const [photos, setPhotos] = useState<string[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
-    const [existingEntryTimestamp, setExistingEntryTimestamp] = useState<string | null>(null);
+    const [showNoteEditor, setShowNoteEditor] = useState(false);
+    const [noteEditorDraft, setNoteEditorDraft] = useState('');
+    const noteInputRef = useRef<TextInput>(null);
+    const [noteEditorBodyHeight, setNoteEditorBodyHeight] = useState(0);
     const isEditing = !!editId;
 
-    useEffect(() => {
-        if (!editId) setExistingEntryTimestamp(null);
-    }, [editId]);
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const projectKey = (selectedProject?.id || selectedProject?.name || 'project').replace(/\s+/g, '_');
+    const draftKey = useMemo(
+        () => `fw_draft_note_${dateKey}_${projectKey}_${editId ?? 'new'}`,
+        [dateKey, projectKey, editId]
+    );
+    const [baselineReady, setBaselineReady] = useState(!isEditing);
 
-    // Load existing note for editing
     useEffect(() => {
-        if (editId) {
-            (async () => {
-                const dateKey = getDateKey(selectedDate);
-                const allNotes = await getNotesForDate(dateKey);
-                const existing = allNotes.find((n) => n.id === editId && n.project?.name === selectedProject?.name);
-                if (existing) {
-                    const isPreset = (CATEGORIES as readonly string[]).includes(existing.category);
-                    if (isPreset) {
-                        setCategory(existing.category as (typeof CATEGORIES)[number]);
-                        setCustomCategory('');
-                    } else {
-                        setCategory('Custom');
-                        setCustomCategory(existing.category ?? '');
-                    }
-                    setNotes(existing.notes);
-                    setPhotos(existing.photos ?? []);
-                    setExistingEntryTimestamp(existing.timestamp);
-                }
-            })();
+        if (!editId) {
+            setBaselineReady(true);
+            return;
         }
-    }, [editId, selectedDate, selectedProject?.name]);
+        setBaselineReady(false);
+        (async () => {
+            const allNotes = await getNotesForDate(dateKey);
+            const existing = allNotes.find((n) => n.id === editId && n.project?.name === selectedProject?.name);
+            if (existing) {
+                const isPreset = (CATEGORIES as readonly string[]).includes(existing.category);
+                if (isPreset) {
+                    setCategory(existing.category as (typeof CATEGORIES)[number]);
+                    setCustomCategory('');
+                } else {
+                    setCategory('Custom');
+                    setCustomCategory(existing.category ?? '');
+                }
+                setNotes(existing.notes);
+                setPhotos(existing.photos ?? []);
+            }
+            setBaselineReady(true);
+        })();
+    }, [editId, dateKey, selectedProject?.name]);
+
+    const noteDraftSnapshot = useMemo(
+        () => JSON.stringify({ category, customCategory, notes, photos }),
+        [category, customCategory, notes, photos]
+    );
+
+    useFormDraft({
+        storageKey: draftKey,
+        active: baselineReady,
+        snapshotJson: noteDraftSnapshot,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as Record<string, unknown>;
+            if (typeof p.notes === 'string') setNotes(p.notes);
+            if (typeof p.customCategory === 'string') setCustomCategory(p.customCategory);
+            const c = p.category;
+            if (typeof c === 'string' && (CATEGORIES as readonly string[]).includes(c)) {
+                setCategory(c as (typeof CATEGORIES)[number]);
+            }
+            if (Array.isArray(p.photos)) {
+                setPhotos(p.photos.filter((x): x is string => typeof x === 'string'));
+            }
+        },
+        isNonEmpty: () =>
+            !!(
+                notes.trim() ||
+                customCategory.trim() ||
+                photos.length > 0 ||
+                (category !== 'General' && category !== 'Custom') ||
+                (category === 'Custom' && customCategory.trim())
+            ),
+    });
+
+    const openNoteEditor = () => {
+        setNoteEditorDraft(notes);
+        setShowNoteEditor(true);
+    };
+
+    useEffect(() => {
+        if (!showNoteEditor) return;
+        const timer = setTimeout(() => noteInputRef.current?.focus(), 120);
+        return () => clearTimeout(timer);
+    }, [showNoteEditor]);
+
+    const saveNoteEditor = () => {
+        setNotes(noteEditorDraft);
+        setShowNoteEditor(false);
+    };
+
+    const closeNoteEditor = () => {
+        setShowNoteEditor(false);
+    };
 
     const pickImage = async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -112,15 +178,15 @@ export default function AddNoteScreen() {
                 : category;
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
             await saveNotes(dateKey, {
                 id: editId ?? createUuid(),
                 project: selectedProject,
-                timestamp: existingEntryTimestamp ?? getTimestampForReportingDay(selectedDate),
+                timestamp: getSubmittedAtIso(),
                 category: categoryToSave,
                 notes: notes.trim(),
                 photos,
             });
+            await clearFormDraft(draftKey);
             setSuccess(true);
             setTimeout(() => router.back(), 1200);
         } catch (e) {
@@ -133,7 +199,7 @@ export default function AddNoteScreen() {
     return (
         <View style={styles.container}>
             <ScreenHeader title={isEditing ? "Edit Note" : "Add Note"} subtitle={selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
-            <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <KeyboardAwareScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
 
                 {/* Project (read-only) */}
                 <View style={styles.field}>
@@ -160,32 +226,39 @@ export default function AddNoteScreen() {
                         ))}
                     </ScrollView>
                     {category === 'Custom' && (
-                        <View style={{ marginTop: 10 }}>
-                            <TextInput
-                                style={styles.customCategoryInput}
-                                value={customCategory}
-                                onChangeText={setCustomCategory}
-                                placeholder="Enter custom category…"
-                                placeholderTextColor={COLORS.subtitle}
-                                autoCapitalize="words"
-                            />
-                        </View>
+                        <KeyboardField style={{ marginTop: 10 }}>
+                            <ScrollInputField>
+                                <TextInput
+                                    style={styles.customCategoryInput}
+                                    value={customCategory}
+                                    onChangeText={setCustomCategory}
+                                    placeholder="Enter custom category…"
+                                    placeholderTextColor={COLORS.subtitle}
+                                    autoCapitalize="words"
+                                />
+                            </ScrollInputField>
+                        </KeyboardField>
                     )}
                 </View>
 
-                {/* Notes input */}
+                {/* Notes — tap to open full-screen editor */}
                 <View style={styles.field}>
                     <Text style={styles.label}>Notes <Text style={styles.required}>*</Text></Text>
-                    <TextInput
-                        style={styles.textArea}
-                        value={notes}
-                        onChangeText={setNotes}
-                        placeholder="Enter your field notes here..."
-                        placeholderTextColor={COLORS.subtitle}
-                        multiline
-                        numberOfLines={6}
-                        textAlignVertical="top"
-                    />
+                    <TouchableOpacity
+                        style={styles.notePreview}
+                        onPress={openNoteEditor}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                        accessibilityLabel="Edit notes"
+                    >
+                        <Text
+                            style={[styles.notePreviewText, !notes.trim() && styles.notePreviewPlaceholder]}
+                            numberOfLines={8}
+                        >
+                            {notes.trim() || 'Tap to enter your field notes…'}
+                        </Text>
+                        <Ionicons name="chevron-forward" size={18} color={COLORS.subtitle} style={styles.notePreviewIcon} />
+                    </TouchableOpacity>
                 </View>
 
                 {/* Photos */}
@@ -235,7 +308,62 @@ export default function AddNoteScreen() {
                         <Text style={styles.submitBtnText}>{isEditing ? 'Update Note' : 'Save Note'}</Text>
                     )}
                 </TouchableOpacity>
-            </ScrollView>
+            </KeyboardAwareScrollView>
+
+            <Modal
+                visible={showNoteEditor}
+                animationType="slide"
+                presentationStyle="pageSheet"
+                onRequestClose={closeNoteEditor}
+            >
+                <KeyboardAvoidingView
+                    style={styles.noteEditorContainer}
+                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                >
+                    <SafeAreaView style={styles.noteEditorInner} edges={['top', 'bottom']}>
+                        <View style={styles.noteEditorHeader}>
+                            <TouchableOpacity
+                                onPress={closeNoteEditor}
+                                hitSlop={12}
+                                style={styles.noteEditorHeaderAction}
+                                accessibilityLabel="Close"
+                            >
+                                <Ionicons name="close" size={28} color="#fff" />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                onPress={saveNoteEditor}
+                                hitSlop={12}
+                                style={styles.noteEditorHeaderAction}
+                                accessibilityLabel="Save"
+                            >
+                                <Ionicons name="checkmark" size={30} color={COLORS.brand} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View
+                            style={styles.noteEditorBody}
+                            onLayout={(e) => setNoteEditorBodyHeight(e.nativeEvent.layout.height)}
+                        >
+                            <TextInput
+                                ref={noteInputRef}
+                                style={[
+                                    styles.noteEditorInput,
+                                    noteEditorBodyHeight > 0 && { height: noteEditorBodyHeight },
+                                ]}
+                                value={noteEditorDraft}
+                                onChangeText={setNoteEditorDraft}
+                                placeholder="Enter your field notes here..."
+                                placeholderTextColor={COLORS.subtitle}
+                                multiline
+                                textAlignVertical="top"
+                                autoCorrect
+                                autoCapitalize="sentences"
+                                scrollEnabled
+                            />
+                        </View>
+                    </SafeAreaView>
+                </KeyboardAvoidingView>
+            </Modal>
         </View>
     );
 }
@@ -255,16 +383,64 @@ const styles = StyleSheet.create({
     categoryChipText: { color: COLORS.subtitle, fontSize: 14, fontWeight: '600' },
     categoryChipTextActive: { color: '#fff' },
     customCategoryInput: { backgroundColor: COLORS.card, borderRadius: 12, padding: 14, color: '#fff', fontSize: 15, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.border },
-    textArea: {
+    notePreview: {
         backgroundColor: COLORS.card,
         borderRadius: 14,
         padding: 14,
-        color: '#fff',
-        fontSize: 15,
         minHeight: 140,
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: COLORS.border,
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+    },
+    notePreviewText: {
+        flex: 1,
+        color: '#fff',
+        fontSize: 15,
         lineHeight: 22,
+    },
+    notePreviewPlaceholder: {
+        color: COLORS.subtitle,
+    },
+    notePreviewIcon: {
+        marginTop: 2,
+    },
+    noteEditorContainer: {
+        flex: 1,
+        backgroundColor: COLORS.surface,
+    },
+    noteEditorInner: {
+        flex: 1,
+        backgroundColor: COLORS.surface,
+    },
+    noteEditorHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        backgroundColor: COLORS.surface,
+    },
+    noteEditorHeaderAction: {
+        width: 44,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    noteEditorBody: {
+        flex: 1,
+    },
+    noteEditorInput: {
+        flex: 1,
+        width: '100%',
+        paddingHorizontal: 16,
+        paddingTop: 4,
+        paddingBottom: 8,
+        backgroundColor: COLORS.surface,
+        color: '#fff',
+        fontSize: 16,
+        lineHeight: 24,
     },
     photoButtons: { flexDirection: 'row', gap: 10 },
     photoBtn: {

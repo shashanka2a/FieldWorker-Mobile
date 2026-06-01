@@ -11,6 +11,7 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { KeyboardAwareScrollView, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 import { SAFETY_TEMPLATES, type SafetyTemplate } from '@/lib/safetyTemplates';
 import { fetchSafetyTalkTemplatesFromSupabase } from '@/lib/supabaseSync';
 
@@ -67,7 +68,7 @@ export default function SafetyTemplateScreen() {
                 title={mode === 'start' ? 'Start Safety Talk' : 'Schedule Safety Talk'}
                 subtitle="Select a template"
             />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+            <KeyboardAwareScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 <View style={styles.modeChip}>
                     <Ionicons name={mode === 'start' ? 'play-circle' : 'calendar'} size={14} color={COLORS.brand} />
                     <Text style={styles.modeText}>{mode === 'start' ? 'Starting talk now' : 'Scheduling for later'}</Text>
@@ -78,16 +79,18 @@ export default function SafetyTemplateScreen() {
                 {/* Search */}
                 <View style={styles.searchWrap}>
                     <Ionicons name="search-outline" size={16} color={COLORS.subtitle} />
-                    <TextInput
-                        style={styles.searchInput}
-                        value={search}
-                        onChangeText={setSearch}
-                        placeholder="Search templates..."
-                        placeholderTextColor={COLORS.subtitle}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        clearButtonMode="never"
-                    />
+                    <ScrollInputField style={{ flex: 1 }}>
+                        <TextInput
+                            style={styles.searchInput}
+                            value={search}
+                            onChangeText={setSearch}
+                            placeholder="Search templates..."
+                            placeholderTextColor={COLORS.subtitle}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            clearButtonMode="never"
+                        />
+                    </ScrollInputField>
                     {search !== '' ? (
                         <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                             <Ionicons name="close-circle" size={16} color={COLORS.subtitle} />
@@ -129,7 +132,7 @@ export default function SafetyTemplateScreen() {
                         <Ionicons name="chevron-forward" size={18} color={COLORS.subtitle} />
                     </TouchableOpacity>
                 ))}
-            </ScrollView>
+            </KeyboardAwareScrollView>
         </View>
     );
 }

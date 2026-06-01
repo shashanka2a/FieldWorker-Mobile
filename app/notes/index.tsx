@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
 import { getDateKey, getNotesForDate, NoteEntry } from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchNotesFromSupabase } from '@/lib/supabaseSync';
 
 const COLORS = {
@@ -39,25 +40,19 @@ export default function NotesListScreen() {
 
     const loadNotes = useCallback(async () => {
         const dateKey = getDateKey(selectedDate);
-        const localData = await getNotesForDate(dateKey);
-        const localFiltered = localData.filter((n) => n.project?.name === selectedProject?.name);
-        const remoteData = await fetchNotesFromSupabase(
-            dateKey,
-            selectedDate,
-            selectedProject?.id ?? '',
-            selectedProject?.name ?? ''
-        );
-
-        const merged = [...localFiltered, ...remoteData];
-        const deduped = merged.filter((note, idx, arr) => {
-            const key = `${note.project?.name}|${note.category}|${note.notes}|${note.timestamp}`;
-            return idx === arr.findIndex((other) =>
-                `${other.project?.name}|${other.category}|${other.notes}|${other.timestamp}` === key
-            );
-        });
-
-        deduped.sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp));
-        setNotes(deduped);
+        const pred = matchProjectPredicate<NoteEntry>(selectedProject?.name);
+        const [localData, remoteData] = await Promise.all([
+            getNotesForDate(dateKey),
+            fetchNotesFromSupabase(
+                dateKey,
+                selectedDate,
+                selectedProject?.id ?? '',
+                selectedProject?.name ?? ''
+            ),
+        ]);
+        const merged = mergeLocalRemotePreferSupabase(localData, remoteData, pred);
+        merged.sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp));
+        setNotes(merged);
     }, [selectedDate, selectedProject?.id, selectedProject?.name]);
 
     useFocusEffect(useCallback(() => { loadNotes(); }, [loadNotes]));

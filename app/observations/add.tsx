@@ -23,7 +23,7 @@ import { useFieldPhotoWatermark } from '@/components/FieldPhotoWatermarkProvider
 import {
     createUuid,
     getDateKey,
-    getTimestampForReportingDay,
+    getSubmittedAtIso,
     saveObservation,
     updateObservation,
     getObservationsForDate,
@@ -31,6 +31,8 @@ import {
     ObservationAssignee,
 } from '@/lib/dailyReportStorage';
 import { fetchEmployeesFromSupabase } from '@/lib/supabaseSync';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -116,11 +118,9 @@ export default function AddObservationScreen() {
     const [showDueDatePicker, setShowDueDatePicker] = useState(false);
     const [employeeDirectory, setEmployeeDirectory] = useState<ObservationAssignee[]>([]);
     const [employeesLoading, setEmployeesLoading] = useState(false);
-    const [existingEntryTimestamp, setExistingEntryTimestamp] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!editId) setExistingEntryTimestamp(null);
-    }, [editId]);
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const draftKey = useMemo(() => `fw_draft_observation_${dateKey}_${editId ?? 'new'}`, [dateKey, editId]);
+    const [baselineReady, setBaselineReady] = useState(!isEditing);
 
     const loadEmployees = useCallback(async () => {
         setEmployeesLoading(true);
@@ -143,29 +143,30 @@ export default function AddObservationScreen() {
         if (showAssigneeSheet) loadEmployees();
     }, [showAssigneeSheet, loadEmployees]);
 
-    // Load existing observation for editing
     useEffect(() => {
-        if (editId) {
-            (async () => {
-                const dateKey = getDateKey(selectedDate);
-                const all = await getObservationsForDate(dateKey);
-                const existing = all.find((o) => o.id === editId);
-                if (existing) {
-                    setCategory(existing.category);
-                    setType(existing.type);
-                    setStatus(existing.status);
-                    setPriority(existing.priority);
-                    setDescription(existing.description ?? '');
-                    setLocation(existing.location ?? '');
-                    setAssignees(existing.assignees);
-                    setDueDate(existing.dueDate ?? '');
-                    setResolutionPhotos(existing.resolutionPhotos ?? []);
-                    setAttachments(existing.attachments ?? []);
-                    setExistingEntryTimestamp(existing.timestamp);
-                }
-            })();
+        if (!editId) {
+            setBaselineReady(true);
+            return;
         }
-    }, [editId, selectedDate]);
+        setBaselineReady(false);
+        (async () => {
+            const all = await getObservationsForDate(dateKey);
+            const existing = all.find((o) => o.id === editId);
+            if (existing) {
+                setCategory(existing.category);
+                setType(existing.type);
+                setStatus(existing.status);
+                setPriority(existing.priority);
+                setDescription(existing.description ?? '');
+                setLocation(existing.location ?? '');
+                setAssignees(existing.assignees);
+                setDueDate(existing.dueDate ?? '');
+                setResolutionPhotos(existing.resolutionPhotos ?? []);
+                setAttachments(existing.attachments ?? []);
+            }
+            setBaselineReady(true);
+        })();
+    }, [editId, dateKey]);
 
     // Set default due date (3 days from now)
     useEffect(() => {
@@ -175,6 +176,81 @@ export default function AddObservationScreen() {
             setDueDate(d.toISOString());
         }
     }, []);
+
+    const observationDraftSnapshot = useMemo(
+        () =>
+            JSON.stringify({
+                category,
+                type,
+                status,
+                priority,
+                description,
+                location,
+                assignees,
+                dueDate,
+                attachments,
+                resolutionPhotos,
+            }),
+        [
+            category,
+            type,
+            status,
+            priority,
+            description,
+            location,
+            assignees,
+            dueDate,
+            attachments,
+            resolutionPhotos,
+        ]
+    );
+
+    useFormDraft({
+        storageKey: draftKey,
+        active: baselineReady,
+        snapshotJson: observationDraftSnapshot,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as Record<string, unknown>;
+            if (p.category === 'Negative' || p.category === 'Positive') setCategory(p.category);
+            if (typeof p.type === 'string' && OBSERVATION_TYPES.includes(p.type)) setType(p.type);
+            if (typeof p.status === 'string' && (STATUSES as readonly string[]).includes(p.status)) {
+                setStatus(p.status as ObservationEntry['status']);
+            }
+            if (typeof p.priority === 'string' && (PRIORITIES as readonly string[]).includes(p.priority)) {
+                setPriority(p.priority as ObservationEntry['priority']);
+            }
+            if (typeof p.description === 'string') setDescription(p.description);
+            if (typeof p.location === 'string') setLocation(p.location);
+            if (typeof p.dueDate === 'string') setDueDate(p.dueDate);
+            if (Array.isArray(p.assignees)) {
+                const rows = p.assignees.filter(
+                    (a): a is ObservationAssignee =>
+                        !!a &&
+                        typeof a === 'object' &&
+                        typeof (a as ObservationAssignee).name === 'string'
+                ) as ObservationAssignee[];
+                setAssignees(rows.map((a) => ({ name: a.name, company: a.company ?? '' })));
+            }
+            if (Array.isArray(p.attachments)) {
+                setAttachments(p.attachments.filter((x): x is string => typeof x === 'string'));
+            }
+            if (Array.isArray(p.resolutionPhotos)) {
+                setResolutionPhotos(p.resolutionPhotos.filter((x): x is string => typeof x === 'string'));
+            }
+        },
+        isNonEmpty: () =>
+            !!(
+                description.trim() ||
+                location.trim() ||
+                assignees.length > 0 ||
+                attachments.length > 0 ||
+                resolutionPhotos.length > 0 ||
+                type !== OBSERVATION_TYPES[0] ||
+                status !== 'Open' ||
+                priority !== 'High'
+            ),
+    });
 
     const pickImage = async (target: 'resolution' | 'attachment') => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -228,11 +304,10 @@ export default function AddObservationScreen() {
     const handleSubmit = async () => {
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
             const entry: ObservationEntry = {
                 id: editId ?? createUuid(),
                 project: selectedProject,
-                timestamp: existingEntryTimestamp ?? getTimestampForReportingDay(selectedDate),
+                timestamp: getSubmittedAtIso(),
                 category,
                 type,
                 status,
@@ -250,6 +325,7 @@ export default function AddObservationScreen() {
             } else {
                 await saveObservation(dateKey, entry);
             }
+            await clearFormDraft(draftKey);
             setSuccess(true);
             setTimeout(() => router.back(), 1000);
         } catch (e) {
@@ -308,10 +384,9 @@ export default function AddObservationScreen() {
                 </TouchableOpacity>
             </View>
 
-            <ScrollView
+            <KeyboardAwareScrollView
                 style={styles.scrollView}
                 contentContainerStyle={styles.scrollContent}
-                keyboardShouldPersistTaps="handled"
             >
                 {/* Attachments */}
                 <TouchableOpacity
@@ -415,33 +490,37 @@ export default function AddObservationScreen() {
                 {showMoreInfo && (
                     <View style={styles.fieldCard}>
                         {/* Description */}
-                        <View style={styles.fieldColumn}>
+                        <KeyboardField style={styles.fieldColumn}>
                             <Text style={styles.fieldSubLabel}>Description</Text>
-                            <TextInput
-                                style={styles.textArea}
-                                value={description}
-                                onChangeText={setDescription}
-                                placeholder="Describe the observation..."
-                                placeholderTextColor={COLORS.subtitle}
-                                multiline
-                                numberOfLines={4}
-                                textAlignVertical="top"
-                            />
-                        </View>
+                            <ScrollInputField>
+                                <TextInput
+                                    style={styles.textArea}
+                                    value={description}
+                                    onChangeText={setDescription}
+                                    placeholder="Describe the observation..."
+                                    placeholderTextColor={COLORS.subtitle}
+                                    multiline
+                                    numberOfLines={4}
+                                    textAlignVertical="top"
+                                />
+                            </ScrollInputField>
+                        </KeyboardField>
 
                         <View style={styles.fieldDivider} />
 
                         {/* Location */}
-                        <View style={styles.fieldColumn}>
+                        <KeyboardField style={styles.fieldColumn}>
                             <Text style={styles.fieldSubLabel}>Location</Text>
-                            <TextInput
-                                style={styles.textInput}
-                                value={location}
-                                onChangeText={setLocation}
-                                placeholder="e.g. Zone A, Building 3..."
-                                placeholderTextColor={COLORS.subtitle}
-                            />
-                        </View>
+                            <ScrollInputField>
+                                <TextInput
+                                    style={styles.textInput}
+                                    value={location}
+                                    onChangeText={setLocation}
+                                    placeholder="e.g. Zone A, Building 3..."
+                                    placeholderTextColor={COLORS.subtitle}
+                                />
+                            </ScrollInputField>
+                        </KeyboardField>
                     </View>
                 )}
 
@@ -534,7 +613,7 @@ export default function AddObservationScreen() {
 
                 {/* Bottom spacing */}
                 <View style={{ height: 40 }} />
-            </ScrollView>
+            </KeyboardAwareScrollView>
 
             {showDueDatePicker && Platform.OS === 'android' ? (
                 <DateTimePicker

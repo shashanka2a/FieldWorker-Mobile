@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
     View,
     Text,
@@ -10,14 +10,16 @@ import {
     ActivityIndicator,
     Image,
 } from 'react-native';
-import { router } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useFocusEffect } from 'expo-router';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useAppContext } from '@/context/AppContext';
-import { createUuid, getDateKey, getTimestampForReportingDay, saveMetrics, getMetricsForDate } from '@/lib/dailyReportStorage';
+import { createUuid, getDateKey, getSubmittedAtIso, saveMetrics, getMetricsForDate, MetricsEntry } from '@/lib/dailyReportStorage';
+import { mergeLocalRemotePreferSupabase, matchProjectPredicate } from '@/lib/mergeLocalRemote';
 import { fetchMetricsFromSupabase } from '@/lib/supabaseSync';
+import { useFormDraft, clearFormDraft } from '@/hooks/useFormDraft';
+import { KeyboardAwareScrollView, KeyboardField, ScrollInputField } from '@/components/KeyboardAwareScrollView';
 
 const COLORS = {
     brand: '#FF6633',
@@ -45,6 +47,8 @@ const METRIC_FIELDS: MetricField[] = [
 
 export default function MetricsScreen() {
     const { selectedDate, selectedProject } = useAppContext();
+    const dateKey = useMemo(() => getDateKey(selectedDate), [selectedDate]);
+    const projectKey = (selectedProject?.id || selectedProject?.name || 'project').replace(/\s+/g, '_');
     const [values, setValues] = useState<Record<string, string>>({
         waterUsage: '',
         acresCompleted: '',
@@ -57,42 +61,56 @@ export default function MetricsScreen() {
     const [success, setSuccess] = useState(false);
     const [entryId, setEntryId] = useState<string | null>(null);
     const [mode, setMode] = useState<'overview' | 'edit'>('edit');
+    const [metricsLoadReady, setMetricsLoadReady] = useState(false);
+    const metricsDraftKey = useMemo(
+        () => `fw_draft_metrics_${dateKey}_${projectKey}_${entryId ?? 'new'}`,
+        [dateKey, projectKey, entryId]
+    );
 
     const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
     useFocusEffect(
         React.useCallback(() => {
             let active = true;
+            setMetricsLoadReady(false);
             (async () => {
-                const dateKey = getDateKey(selectedDate);
-                const localData = await getMetricsForDate(dateKey);
-                const remoteData = await fetchMetricsFromSupabase(
-                    dateKey,
-                    selectedDate,
-                    selectedProject?.id ?? '',
-                    selectedProject?.name ?? ''
-                );
-                const data = [...localData, ...remoteData].filter((d) => d.project?.name === selectedProject?.name);
-                // Pre-fill with the first/most recent metric entry if it exists
-                if (data.length > 0 && active) {
-                    const latest = data[data.length - 1]; // if multiple, use latest
-                    setEntryId(latest.id);
-                    setMode('overview');
-                    setValues({
-                        waterUsage: latest.waterUsage || '',
-                        acresCompleted: latest.acresCompleted || '',
-                        greenSpaceCompleted: latest.greenSpaceCompleted || '',
-                        numberOfOperators: latest.numberOfOperators || '',
-                    });
-                    setNotes(latest.notes || '');
-                    setPhotos(latest.photos || []);
-                } else if (active) {
-                    setEntryId(null);
-                    setMode('edit');
+                try {
+                    const localData = await getMetricsForDate(dateKey);
+                    const remoteData = await fetchMetricsFromSupabase(
+                        dateKey,
+                        selectedDate,
+                        selectedProject?.id ?? '',
+                        selectedProject?.name ?? ''
+                    );
+                    const data = mergeLocalRemotePreferSupabase(
+                        localData,
+                        remoteData,
+                        matchProjectPredicate<MetricsEntry>(selectedProject?.name)
+                    );
+                    const sortedMetrics = [...data].sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
+                    // Pre-fill with the first/most recent metric entry if it exists
+                    if (sortedMetrics.length > 0 && active) {
+                        const latest = sortedMetrics[sortedMetrics.length - 1];
+                        setEntryId(latest.id);
+                        setMode('overview');
+                        setValues({
+                            waterUsage: latest.waterUsage || '',
+                            acresCompleted: latest.acresCompleted || '',
+                            greenSpaceCompleted: latest.greenSpaceCompleted || '',
+                            numberOfOperators: latest.numberOfOperators || '',
+                        });
+                        setNotes(latest.notes || '');
+                        setPhotos(latest.photos || []);
+                    } else if (active) {
+                        setEntryId(null);
+                        setMode('edit');
+                    }
+                } finally {
+                    if (active) setMetricsLoadReady(true);
                 }
             })();
             return () => { active = false; };
-        }, [selectedDate, selectedProject?.name])
+        }, [dateKey, selectedDate, selectedProject?.id, selectedProject?.name])
     );
 
     const pickImage = async () => {
@@ -102,6 +120,42 @@ export default function MetricsScreen() {
         if (!result.canceled) setPhotos((prev) => [...prev, ...result.assets.map((a) => a.uri)]);
     };
 
+    const metricsDraftSnapshot = useMemo(
+        () => JSON.stringify({ values, notes, photos }),
+        [values, notes, photos]
+    );
+
+    useFormDraft({
+        storageKey: metricsDraftKey,
+        active: metricsLoadReady && mode === 'edit',
+        snapshotJson: metricsDraftSnapshot,
+        hydrate: (parsed) => {
+            if (!parsed || typeof parsed !== 'object') return;
+            const p = parsed as Record<string, unknown>;
+            if (p.values && typeof p.values === 'object' && p.values !== null) {
+                const v = p.values as Record<string, unknown>;
+                setValues((prev) => ({
+                    waterUsage: typeof v.waterUsage === 'string' ? v.waterUsage : prev.waterUsage,
+                    acresCompleted: typeof v.acresCompleted === 'string' ? v.acresCompleted : prev.acresCompleted,
+                    greenSpaceCompleted:
+                        typeof v.greenSpaceCompleted === 'string' ? v.greenSpaceCompleted : prev.greenSpaceCompleted,
+                    numberOfOperators:
+                        typeof v.numberOfOperators === 'string' ? v.numberOfOperators : prev.numberOfOperators,
+                }));
+            }
+            if (typeof p.notes === 'string') setNotes(p.notes);
+            if (Array.isArray(p.photos)) {
+                setPhotos(p.photos.filter((x): x is string => typeof x === 'string'));
+            }
+        },
+        isNonEmpty: () =>
+            !!(
+                Object.values(values).some((v) => v.trim() !== '') ||
+                notes.trim() ||
+                photos.length > 0
+            ),
+    });
+
     const handleSubmit = async () => {
         const hasValue = Object.values(values).some((v) => v.trim() !== '');
         if (!hasValue) {
@@ -110,11 +164,11 @@ export default function MetricsScreen() {
         }
         setSubmitting(true);
         try {
-            const dateKey = getDateKey(selectedDate);
+            const id = entryId ?? createUuid();
             await saveMetrics(dateKey, {
-                id: entryId ?? createUuid(),
+                id,
                 project: selectedProject,
-                timestamp: getTimestampForReportingDay(selectedDate),
+                timestamp: getSubmittedAtIso(),
                 waterUsage: values.waterUsage || undefined,
                 acresCompleted: values.acresCompleted || undefined,
                 greenSpaceCompleted: values.greenSpaceCompleted || undefined,
@@ -122,6 +176,8 @@ export default function MetricsScreen() {
                 notes: notes.trim() || undefined,
                 photos: photos.length > 0 ? photos : undefined,
             });
+            await clearFormDraft(metricsDraftKey);
+            setEntryId(id);
             setSuccess(true);
             setMode('overview');
             setTimeout(() => setSuccess(false), 1200);
@@ -135,7 +191,7 @@ export default function MetricsScreen() {
     return (
         <View style={styles.container}>
             <ScreenHeader title="Daily Metrics" subtitle={dateLabel} />
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            <KeyboardAwareScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 {mode === 'overview' && (
                     <View style={styles.overviewCard}>
                         <View style={styles.overviewHeader}>
@@ -202,7 +258,7 @@ export default function MetricsScreen() {
 
                 {/* Metric cards */}
                 {METRIC_FIELDS.map((field) => (
-                    <View key={field.key} style={styles.metricCard}>
+                    <KeyboardField key={field.key} style={styles.metricCard}>
                         <View style={styles.metricHeader}>
                             <View style={styles.metricIconWrap}>
                                 <Ionicons name={field.icon as any} size={20} color={COLORS.brand} />
@@ -210,33 +266,37 @@ export default function MetricsScreen() {
                             <Text style={styles.metricLabel}>{field.label}</Text>
                         </View>
                         <View style={styles.metricInputRow}>
-                            <TextInput
-                                style={styles.metricInput}
-                                value={values[field.key]}
-                                onChangeText={(v) => setValues((prev) => ({ ...prev, [field.key]: v }))}
-                                placeholder={field.placeholder}
-                                placeholderTextColor={COLORS.subtitle}
-                                keyboardType={field.keyboardType}
-                            />
+                            <ScrollInputField style={{ flex: 1 }}>
+                                <TextInput
+                                    style={styles.metricInput}
+                                    value={values[field.key]}
+                                    onChangeText={(v) => setValues((prev) => ({ ...prev, [field.key]: v }))}
+                                    placeholder={field.placeholder}
+                                    placeholderTextColor={COLORS.subtitle}
+                                    keyboardType={field.keyboardType}
+                                />
+                            </ScrollInputField>
                             <Text style={styles.metricUnit}>{field.unit}</Text>
                         </View>
-                    </View>
+                    </KeyboardField>
                 ))}
 
                 {/* Notes */}
-                <View style={styles.field}>
+                <KeyboardField style={styles.field}>
                     <Text style={styles.label}>Notes (optional)</Text>
-                    <TextInput
-                        style={styles.textArea}
-                        value={notes}
-                        onChangeText={setNotes}
-                        placeholder="Additional notes..."
-                        placeholderTextColor={COLORS.subtitle}
-                        multiline
-                        numberOfLines={3}
-                        textAlignVertical="top"
-                    />
-                </View>
+                    <ScrollInputField>
+                        <TextInput
+                            style={styles.textArea}
+                            value={notes}
+                            onChangeText={setNotes}
+                            placeholder="Additional notes..."
+                            placeholderTextColor={COLORS.subtitle}
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                        />
+                    </ScrollInputField>
+                </KeyboardField>
 
                 {/* Photos */}
                 <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
@@ -267,7 +327,7 @@ export default function MetricsScreen() {
                 </TouchableOpacity>
                     </>
                 )}
-            </ScrollView>
+            </KeyboardAwareScrollView>
         </View>
     );
 }

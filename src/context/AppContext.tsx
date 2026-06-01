@@ -1,13 +1,58 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, {
+    createContext,
+    useContext,
+    useState,
+    useEffect,
+    ReactNode,
+    useMemo,
+} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDateKey, parseDateKeyLocal } from '@/lib/dailyReportStorage';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/AuthContext';
 
 interface Project {
     id: string;
     name: string;
     address?: string;
     zipcode?: string;
+}
+
+type ProjectRow = {
+    id: string;
+    name: string;
+    address?: string | null;
+    street_address?: string | null;
+    zipcode?: string | null;
+};
+
+function normalizeProject(row: ProjectRow): Project {
+    const street = (row.street_address ?? row.address ?? '').trim();
+    const zip = (row.zipcode ?? '').trim();
+    return {
+        id: row.id,
+        name: row.name,
+        ...(street ? { address: street } : {}),
+        ...(zip ? { zipcode: zip } : {}),
+    };
+}
+
+async function loadProjectsFromSupabase(): Promise<Project[]> {
+    const order = { ascending: true as const };
+    let res = await supabase
+        .from('projects')
+        .select('id, name, street_address, zipcode')
+        .order('name', order);
+
+    if (res.error) {
+        res = await supabase
+            .from('projects')
+            .select('id, name, address, zipcode')
+            .order('name', order);
+    }
+
+    if (res.error) throw res.error;
+    return (res.data ?? []).map((row) => normalizeProject(row as ProjectRow));
 }
 
 interface AppContextType {
@@ -25,27 +70,35 @@ const AppContext = createContext<AppContextType | null>(null);
 
 const FALLBACK_PROJECT: Project = { id: '', name: 'No Project Selected' };
 
-const CURRENT_USER = {
-    name: 'Field Worker',
-    role: 'Field Supervisor',
-};
-
 export function AppProvider({ children }: { children: ReactNode }) {
+    const { session, authLoading } = useAuth();
     const [selectedDate, setSelectedDateState] = useState<Date>(new Date());
     const [selectedProject, setSelectedProjectState] = useState<Project>(FALLBACK_PROJECT);
     const [projects, setProjects] = useState<Project[]>([]);
     const [loadingProjects, setLoadingProjects] = useState(true);
 
+    const currentUser = useMemo(() => {
+        const u = session?.user;
+        if (!u) {
+            return { name: 'Field Worker', role: 'Field Supervisor' };
+        }
+        const meta = u.user_metadata as Record<string, unknown> | undefined;
+        const name =
+            typeof meta?.full_name === 'string'
+                ? meta.full_name
+                : (u.email?.split('@')[0] ?? 'Field Worker');
+        const role =
+            typeof meta?.role === 'string'
+                ? meta.role
+                : 'Field Supervisor';
+        return { name, role };
+    }, [session]);
+
     const fetchProjects = async () => {
         setLoadingProjects(true);
         try {
-            const { data, error } = await supabase
-                .from('projects')
-                .select('id, name, address, zipcode')
-                .order('name', { ascending: true });
-
-            if (error) throw error;
-            if (data && data.length > 0) {
+            const data = await loadProjectsFromSupabase();
+            if (data.length > 0) {
                 setProjects(data);
 
                 // Try to restore the previously selected project
@@ -69,7 +122,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
 
     useEffect(() => {
-        // Load saved date from storage
         AsyncStorage.getItem('selectedDate').then((saved) => {
             if (!saved) return;
             if (/^\d{4}-\d{2}-\d{2}$/.test(saved)) {
@@ -82,10 +134,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 AsyncStorage.setItem('selectedDate', getDateKey(parsed)).catch(() => {});
             }
         });
-
-        // Fetch projects from Supabase
-        fetchProjects();
     }, []);
+
+    useEffect(() => {
+        if (authLoading) return;
+        if (session?.user) {
+            fetchProjects();
+            return;
+        }
+        setLoadingProjects(false);
+        setProjects([]);
+        setSelectedProjectState(FALLBACK_PROJECT);
+    }, [session?.user?.id, authLoading]);
 
     const setSelectedDate = async (date: Date) => {
         setSelectedDateState(date);
@@ -106,7 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 setSelectedProject,
                 projects,
                 loadingProjects,
-                currentUser: CURRENT_USER,
+                currentUser,
                 refreshProjects: fetchProjects,
             }}
         >

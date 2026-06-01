@@ -4,7 +4,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { uploadPhotosArray, uploadImageToCloudinary } from './cloudinary';
+import { uploadPhotosArray, uploadImageToCloudinary, uploadAttachmentPreviews } from './cloudinary';
 import {
     syncNoteToSupabase,
     syncChemicalsToSupabase,
@@ -15,8 +15,16 @@ import {
     syncObservationToSupabase,
     syncIncidentToSupabase,
     syncSignedReportToSupabase,
-    syncAttachmentToSupabase
+    syncAttachmentToSupabase,
+    type SyncSignedReportResult,
+    fetchDailySignedReportFromSupabase,
+    fetchEquipmentFromSupabase,
+    fetchAttachmentsFromSupabase,
 } from './supabaseSync';
+import { mergeLocalRemotePreferSupabase } from './mergeLocalRemote';
+import type { InjuredEmployeeRecord } from './injuredEmployeeInfo';
+import type { IncidentInvestigationRecord } from './incidentInvestigationInfo';
+import type { IncidentOutcomeRecord } from './incidentOutcomeInfo';
 
 // --- Date Utilities ---
 
@@ -38,41 +46,37 @@ export function parseDateKeyLocal(dateKey: string): Date {
 }
 
 /**
- * Wall-clock time anchored to the **selected reporting calendar day** (aligned with DB `logged_at`
- * merging in sync). Use for new entries so timestamps always fall on the day being reported.
+ * Real device UTC instant when the user saved the record.
+ * Used for local `timestamp` and Supabase `logged_at`. Which report day a row belongs to is
+ * determined by AsyncStorage date keys and DB `report_date`, not by shifting this timestamp.
  */
-export function getTimestampForReportingDay(reportDay: Date, wall: Date = new Date()): string {
-    const dateKey = getDateKey(reportDay);
-    const [ys, ms, ds] = dateKey.split('-');
-    const y = Number(ys);
-    const mo = Number(ms);
-    const d = Number(ds);
-    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return wall.toISOString();
-    const merged = new Date(
-        y,
-        mo - 1,
-        d,
-        wall.getHours(),
-        wall.getMinutes(),
-        wall.getSeconds(),
-        wall.getMilliseconds(),
-    );
-    return merged.toISOString();
+export function getSubmittedAtIso(): string {
+    return new Date().toISOString();
 }
 
-/** RFC4122-ish v4 UUID generator (no native crypto dependency). */
+/**
+ * RFC 4122 v4 UUID. Must match `isUuid` checks in `supabaseSync` (8-4-4-4-12 hex) so upserts target the
+ * correct row; the old substring-based generator often produced invalid lengths and broke multi-row sync.
+ */
 export function createUuid(): string {
-    // eslint-disable-next-line no-bitwise
-    const s4 = () => (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
-    // eslint-disable-next-line no-bitwise
-    const s4a = () => (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
-    const a = s4() + s4();
-    const b = s4();
-    const c = '4' + s4().substring(1); // version 4
-    // eslint-disable-next-line no-bitwise
-    const d = (((8 + Math.random() * 4) | 0).toString(16) + s4a().substring(1)); // variant 8..b
-    const e = s4() + s4() + s4();
-    return `${a}-${b}-${c}-${d}-${e}`.toLowerCase();
+    const c = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: Crypto }).crypto : undefined;
+    if (c?.randomUUID) return c.randomUUID();
+    if (c?.getRandomValues) {
+        const buf = new Uint8Array(16);
+        c.getRandomValues(buf);
+        buf[6] = (buf[6]! & 0x0f) | 0x40;
+        buf[8] = (buf[8]! & 0x3f) | 0x80;
+        const hex = [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+    }
+    const rnd = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+    const a = rnd() + rnd();
+    const b = rnd();
+    const segC = `4${rnd().slice(1)}`;
+    const d1 = ((8 + Math.floor(Math.random() * 4)) | 0).toString(16);
+    const d = `${d1}${rnd().slice(1)}`;
+    const e = rnd() + rnd() + rnd();
+    return `${a}-${b}-${segC}-${d}-${e}`.toLowerCase();
 }
 
 export async function getReportDate(): Promise<Date> {
@@ -168,7 +172,7 @@ export interface MaterialEntry {
 
 export interface AttachmentEntry {
     id: string;
-    project: { name: string };
+    project: { name: string; id?: string };
     timestamp: string;
     fileNames: string[];
     notes?: string;
@@ -208,9 +212,9 @@ export interface IncidentEntry {
     incidentTime: string;
     location: string;
     injuryIllnessType?: string;
-    injuredEmployeeInfo?: string[];
-    incidentInvestigation?: string[];
-    incidentOutcome?: string[];
+    injuredEmployeeInfo?: InjuredEmployeeRecord[];
+    incidentInvestigation?: IncidentInvestigationRecord;
+    incidentOutcome?: IncidentOutcomeRecord;
     description?: string;
     photos?: string[];
 }
@@ -222,6 +226,8 @@ export interface EquipmentChecklistEntry {
     formData: Record<string, string>;
     signature?: string;
     photos?: string[];
+    /** When set, Supabase sync uses this project (id preferred) instead of only formData.siteName. */
+    project?: { name: string; id?: string };
 }
 
 export type EquipmentOrChecklistEntry = EquipmentEntry | EquipmentChecklistEntry;
@@ -232,6 +238,8 @@ export interface SignedReportEntry {
     preparedBy: string;
     signatureDataUrl?: string;
     projectName: string;
+    /** When set (from Supabase project picker), cloud sync does not depend on name matching. */
+    projectId?: string;
     reportUrl?: string;
     unsignedReportUrl?: string;
     isSigned: boolean;
@@ -330,9 +338,17 @@ export async function saveMaterial(dateKey: string, entry: MaterialEntry): Promi
 }
 
 export async function saveAttachments(dateKey: string, entry: AttachmentEntry): Promise<void> {
-    if (entry.previews?.length) entry.previews = await uploadPhotosArray(entry.previews);
+    const imageUris = entry.previews ?? [];
+    if (imageUris.length > 0) {
+        entry.previews = await uploadAttachmentPreviews(imageUris);
+    }
+
+    const syncResult = await syncAttachmentToSupabase(dateKey, entry);
+    if (!syncResult.ok) {
+        throw new Error(syncResult.error || 'Could not save attachments to the database.');
+    }
+
     await upsertEntryById(STORAGE_KEYS.attachments, dateKey, entry);
-    syncAttachmentToSupabase(dateKey, entry).catch(console.error);
 }
 
 export async function saveEquipmentChecklist(
@@ -450,7 +466,7 @@ const SIGNED_REPORT_DATE_KEYS = 'signed_report_date_keys';
 export async function saveSignedReport(
     dateKey: string,
     entry: SignedReportEntry
-): Promise<void> {
+): Promise<SyncSignedReportResult> {
     if (entry.signatureDataUrl) {
         entry.signatureDataUrl = (await uploadImageToCloudinary(entry.signatureDataUrl)) || entry.signatureDataUrl;
     }
@@ -463,13 +479,17 @@ export async function saveSignedReport(
         await AsyncStorage.setItem(SIGNED_REPORT_DATE_KEYS, JSON.stringify(keys));
     }
 
-    syncSignedReportToSupabase(entry).catch(console.error);
+    const result = await syncSignedReportToSupabase(entry);
+    if (!result.ok) {
+        console.warn('[saveSignedReport] Supabase daily_signed_reports sync failed:', result.error);
+    }
+    return result;
 }
 
 export async function saveUnsignedReport(
     dateKey: string,
     entry: SignedReportEntry
-): Promise<void> {
+): Promise<SyncSignedReportResult> {
     await AsyncStorage.setItem(STORAGE_KEYS.signed(dateKey), JSON.stringify(entry));
     const keys = await getSignedReportDateKeys();
     if (!keys.includes(dateKey)) {
@@ -477,7 +497,11 @@ export async function saveUnsignedReport(
         keys.sort().reverse();
         await AsyncStorage.setItem(SIGNED_REPORT_DATE_KEYS, JSON.stringify(keys));
     }
-    syncSignedReportToSupabase(entry).catch(console.error);
+    const result = await syncSignedReportToSupabase(entry);
+    if (!result.ok) {
+        console.warn('[saveUnsignedReport] Supabase daily_signed_reports sync failed:', result.error);
+    }
+    return result;
 }
 
 export async function getSignedReportDateKeys(): Promise<string[]> {
@@ -499,6 +523,38 @@ export async function getSignedReport(dateKey: string): Promise<SignedReportEntr
     } catch {
         return null;
     }
+}
+
+/**
+ * Re-push a locally signed report to `daily_signed_reports` (e.g. first sync failed, or the row
+ * predates `projectId`). Safe to call whenever preview opens: upsert is idempotent.
+ * Only runs when the signed row's project name matches the currently selected project.
+ */
+export async function resyncSignedReportToSupabaseIfPresent(
+    dateKey: string,
+    selectedProject: { id: string; name: string },
+): Promise<SyncSignedReportResult | null> {
+    const pid = selectedProject.id?.trim();
+    if (!pid) return null;
+
+    const signed = await getSignedReport(dateKey);
+    if (!signed?.isSigned) return null;
+    if (!projectNameEquals(signed.projectName, selectedProject.name)) return null;
+
+    const entry: SignedReportEntry = {
+        ...signed,
+        projectId: signed.projectId?.trim() || pid,
+    };
+
+    if (!signed.projectId?.trim()) {
+        try {
+            await AsyncStorage.setItem(STORAGE_KEYS.signed(dateKey), JSON.stringify(entry));
+        } catch {
+            /* still upsert with in-memory projectId */
+        }
+    }
+
+    return syncSignedReportToSupabase(entry);
 }
 
 // --- Aggregated Report ---
@@ -526,21 +582,69 @@ export async function getReportForDate(
     projectName: string = 'North Valley Solar Farm',
     projectAddress?: string,
     projectZipcode?: string,
+    options?: { projectId?: string },
 ): Promise<ReportData> {
     const dateKey = getDateKey(date);
-    const [notes, chemicals, material, metrics, survey, equipment, attachments, observations, incidents, signed] =
-        await Promise.all([
-            getNotesForDate(dateKey),
-            getChemicalsForDate(dateKey),
-            getMaterialForDate(dateKey),
-            getMetricsForDate(dateKey),
-            getSurveyForDate(dateKey),
-            getEquipmentForDate(dateKey),
-            getAttachmentsForDate(dateKey),
-            getObservationsForDate(dateKey),
-            getIncidentsForDate(dateKey),
-            getSignedReport(dateKey),
-        ]);
+    const pid = options?.projectId?.trim() ?? '';
+    const uuidOk =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pid);
+
+    const [
+        notes,
+        chemicals,
+        material,
+        metrics,
+        survey,
+        localEquipment,
+        localAttachments,
+        observations,
+        incidents,
+        localSigned,
+        remoteSignedPack,
+        remoteEquipment,
+        remoteAttachments,
+    ] = await Promise.all([
+        getNotesForDate(dateKey),
+        getChemicalsForDate(dateKey),
+        getMaterialForDate(dateKey),
+        getMetricsForDate(dateKey),
+        getSurveyForDate(dateKey),
+        getEquipmentForDate(dateKey),
+        getAttachmentsForDate(dateKey),
+        getObservationsForDate(dateKey),
+        getIncidentsForDate(dateKey),
+        getSignedReport(dateKey),
+        uuidOk ? fetchDailySignedReportFromSupabase(pid, dateKey, projectName) : Promise.resolve({ entry: null as SignedReportEntry | null, ok: false }),
+        uuidOk ? fetchEquipmentFromSupabase(dateKey, date, pid, projectName) : Promise.resolve([] as EquipmentOrChecklistEntry[]),
+        uuidOk ? fetchAttachmentsFromSupabase(dateKey, date, pid, projectName) : Promise.resolve([] as AttachmentEntry[]),
+    ]);
+
+    const equipmentPred = (e: EquipmentOrChecklistEntry) =>
+        equipmentEntryMatchesProject(e, projectName, pid);
+    const equipment = mergeLocalRemotePreferSupabase(localEquipment, remoteEquipment, equipmentPred);
+
+    const attachmentsPred = (a: AttachmentEntry) =>
+        projectNameEquals(a.project?.name, projectName) ||
+        (!!pid && a.project?.id?.trim() === pid);
+    const reportAttachments = (uuidOk ? remoteAttachments : localAttachments)
+        .filter(attachmentsPred)
+        .filter((a) =>
+            (a.previews ?? []).some(
+                (u) => typeof u === 'string' && (u.startsWith('https://') || u.startsWith('http://'))
+            )
+        );
+
+    /** When Supabase read succeeds: use DB row if present; otherwise same-project local (pending sync). */
+    let signed: SignedReportEntry | null = localSigned;
+    if (uuidOk && remoteSignedPack.ok) {
+        if (remoteSignedPack.entry !== null) {
+            signed = remoteSignedPack.entry;
+        } else if (localSigned && projectNameEquals(localSigned.projectName, projectName)) {
+            signed = localSigned;
+        } else {
+            signed = null;
+        }
+    }
 
     return {
         dateKey,
@@ -554,7 +658,7 @@ export async function getReportForDate(
         metrics,
         survey,
         equipment,
-        attachments,
+        attachments: reportAttachments,
         observations,
         incidents,
         signed,
@@ -591,7 +695,20 @@ function projectNameEquals(a: string | undefined, b: string | undefined): boolea
     return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-function equipmentEntryMatchesProject(entry: EquipmentOrChecklistEntry, projectName: string): boolean {
+export function equipmentEntryMatchesProject(
+    entry: EquipmentOrChecklistEntry,
+    projectName: string,
+    projectId?: string
+): boolean {
+    const pid = projectId?.trim();
+    if (
+        pid &&
+        'type' in entry &&
+        entry.type === 'checklist' &&
+        entry.project?.id?.trim() === pid
+    ) {
+        return true;
+    }
     if ('type' in entry && entry.type === 'checklist' && entry.formData && typeof (entry.formData as Record<string, string>).siteName === 'string') {
         return projectNameEquals((entry.formData as Record<string, string>).siteName, projectName);
     }
@@ -634,8 +751,23 @@ export async function hasDataForDateForProject(dateKey: string, projectName: str
     return false;
 }
 
-/** Local signed daily report for this project (isSigned true). */
-export async function isReportFullySignedForProject(dateKey: string, projectName: string): Promise<boolean> {
+/** Whether this calendar day is fully signed for the project (Supabase when online; else local). */
+export async function isReportFullySignedForProject(
+    dateKey: string,
+    projectName: string,
+    options?: { projectId?: string },
+): Promise<boolean> {
+    const pid = options?.projectId?.trim() ?? '';
+    const uuidOk =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pid);
+    if (uuidOk) {
+        const { entry, ok } = await fetchDailySignedReportFromSupabase(pid, dateKey, projectName);
+        if (ok) {
+            if (entry !== null) return entry.isSigned === true;
+            const s = await getSignedReport(dateKey);
+            return !!(s && projectNameEquals(s.projectName, projectName) && s.isSigned);
+        }
+    }
     const s = await getSignedReport(dateKey);
     return !!(s && projectNameEquals(s.projectName, projectName) && s.isSigned);
 }

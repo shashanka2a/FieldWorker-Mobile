@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppContext } from '@/context/AppContext';
+import { useAuth } from '@/context/AuthContext';
 
 const COLORS = {
     brand: '#FF6633',
@@ -103,6 +104,7 @@ function Section({ label, children }: SectionProps) {
 
 export default function MoreScreen() {
     const { currentUser } = useAppContext();
+    const { signOut } = useAuth();
     const pathname = usePathname();
 
     const handleSignOut = () => {
@@ -111,7 +113,18 @@ export default function MoreScreen() {
             'Are you sure you want to sign out?',
             [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Sign Out', style: 'destructive', onPress: () => console.log('Sign out') },
+                {
+                    text: 'Sign Out',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await signOut();
+                            router.replace('/login');
+                        } catch {
+                            Alert.alert('Error', 'Could not sign out. Try again.');
+                        }
+                    },
+                },
             ]
         );
     };

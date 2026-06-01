@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     View,
     Text,
@@ -13,7 +13,10 @@ import {
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/ScreenHeader';
-import { getSafetyTalks, SafetyTalk, SafetyTalkStatus } from '@/lib/safetyStorage';
+import { useAppContext } from '@/context/AppContext';
+import { getSafetyTalks, SafetyTalk, safetyTalkMatchesProject } from '@/lib/safetyStorage';
+import { syncSafetyTalkToSupabase } from '@/lib/supabaseSync';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const COLORS = {
     brand: '#FF6633',
@@ -41,10 +44,14 @@ function formatDate(dateStr: string): string {
     });
 }
 
+const NO_PROJECT = 'No Project Selected';
+
 export default function SafetyListScreen() {
     const { tab } = useLocalSearchParams<{ tab?: string }>();
+    const { selectedProject } = useAppContext();
     const [activeTab, setActiveTab] = useState<TabType>('upcoming');
     const [talks, setTalks] = useState<SafetyTalk[]>([]);
+    const [completedMeta, setCompletedMeta] = useState<Record<string, { attendeeCount?: number }>>({});
     const [search, setSearch] = useState('');
     const [refreshing, setRefreshing] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
@@ -52,7 +59,44 @@ export default function SafetyListScreen() {
     const loadTalks = useCallback(async () => {
         const data = await getSafetyTalks();
         setTalks(data);
-    }, []);
+
+        const pid = selectedProject?.id?.trim();
+        const pname = selectedProject?.name ?? '';
+
+        // Best-effort: conducted talks should exist in Supabase; re-upsert covers offline/legacy failures.
+        // Do not append audit_log rows on every tab visit (would duplicate Activity feed entries).
+        for (const t of data) {
+            if (t.status === 'conducted' && safetyTalkMatchesProject(t, pid, pname)) {
+                syncSafetyTalkToSupabase(t, { skipAuditLog: true }).catch(console.error);
+            }
+        }
+
+        // Load attendee counts for completed talks (best-effort).
+        const conducted = data.filter(
+            (t) => t.status === 'conducted' && safetyTalkMatchesProject(t, pid, pname)
+        );
+        if (conducted.length === 0) {
+            setCompletedMeta({});
+            return;
+        }
+        try {
+            const keys = conducted.map((t) => `safety_talk_completed_${t.id}`);
+            const pairs = await AsyncStorage.multiGet(keys);
+            const meta: Record<string, { attendeeCount?: number }> = {};
+            for (const [k, v] of pairs) {
+                if (!v) continue;
+                try {
+                    const parsed = JSON.parse(v);
+                    const talkId = String(parsed?.talkId ?? '').trim() || k.replace('safety_talk_completed_', '');
+                    const count = typeof parsed?.attendeeCount === 'number' ? parsed.attendeeCount : undefined;
+                    meta[talkId] = { attendeeCount: count };
+                } catch { }
+            }
+            setCompletedMeta(meta);
+        } catch {
+            setCompletedMeta({});
+        }
+    }, [selectedProject?.id, selectedProject?.name]);
 
     useEffect(() => {
         if (tab === 'conducted' || tab === 'upcoming' || tab === 'missed') {
@@ -73,7 +117,18 @@ export default function SafetyListScreen() {
         setRefreshing(false);
     };
 
-    const filtered = talks
+    const projectTalks = useMemo(
+        () =>
+            talks.filter((t) =>
+                safetyTalkMatchesProject(t, selectedProject?.id, selectedProject?.name)
+            ),
+        [talks, selectedProject?.id, selectedProject?.name]
+    );
+
+    const hasProject =
+        !!selectedProject?.name?.trim() && selectedProject.name !== NO_PROJECT;
+
+    const filtered = projectTalks
         .filter((t) => t.status === activeTab)
         .filter((t) => !search || t.templateName.toLowerCase().includes(search.toLowerCase()));
 
@@ -81,7 +136,10 @@ export default function SafetyListScreen() {
 
     return (
         <View style={styles.container}>
-            <ScreenHeader title="Safety Talks" />
+            <ScreenHeader
+                title="Safety Talks"
+                subtitle={hasProject ? selectedProject.name : 'Select a project on Home'}
+            />
 
             {/* Search */}
             <View style={styles.searchWrap}>
@@ -103,7 +161,7 @@ export default function SafetyListScreen() {
             {/* Tab Bar Segmented Control */}
             <View style={styles.segmentedControl}>
                 {TAB_CONFIG.map((tab) => {
-                    const count = talks.filter((t) => t.status === tab.key).length;
+                    const count = projectTalks.filter((t) => t.status === tab.key).length;
                     const isActive = activeTab === tab.key;
                     return (
                         <TouchableOpacity
@@ -124,7 +182,17 @@ export default function SafetyListScreen() {
                 contentContainerStyle={styles.scrollContent}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.brand} />}
             >
-                {filtered.length === 0 ? (
+                {!hasProject ? (
+                    <View style={styles.emptyState}>
+                        <View style={styles.emptyIconWrap}>
+                            <Ionicons name="folder-open-outline" size={40} color={COLORS.subtitle} />
+                        </View>
+                        <Text style={styles.emptyTitle}>No project selected</Text>
+                        <Text style={styles.emptySubtitle}>
+                            Choose a field project on the Home tab. Safety talks are listed per project.
+                        </Text>
+                    </View>
+                ) : filtered.length === 0 ? (
                     <View style={styles.emptyState}>
                         <View style={styles.emptyIconWrap}>
                             <Ionicons name="shield-checkmark-outline" size={40} color={COLORS.brand} />
@@ -132,8 +200,8 @@ export default function SafetyListScreen() {
                         <Text style={styles.emptyTitle}>No {activeTab} talks</Text>
                         <Text style={styles.emptySubtitle}>
                             {activeTab === 'upcoming'
-                                ? 'Use the buttons below to start or schedule a safety talk.'
-                                : `No ${activeTab} safety talks found.`}
+                                ? 'Use the buttons below to start or schedule a safety talk for this project.'
+                                : `No ${activeTab} safety talks for ${selectedProject.name}.`}
                         </Text>
                     </View>
                 ) : (
@@ -145,7 +213,7 @@ export default function SafetyListScreen() {
                                 if (activeTab === 'upcoming' || activeTab === 'missed') {
                                     router.push(`/safety/schedule?id=${talk.id}`);
                                 } else {
-                                    router.push(`/safety/read?templateId=${talk.templateId}`);
+                                    router.push(`/safety/read?talkId=${talk.id}`);
                                 }
                             }}
                             activeOpacity={0.8}
@@ -155,7 +223,12 @@ export default function SafetyListScreen() {
                             </View>
                             <View style={styles.talkInfo}>
                                 <Text style={styles.talkName} numberOfLines={2}>{talk.templateName}</Text>
-                                <Text style={styles.talkDate}>{formatDate(talk.date)}</Text>
+                                <Text style={styles.talkDate}>
+                                    {formatDate(talk.date)}
+                                    {completedMeta[talk.id]?.attendeeCount
+                                        ? `  •  ${completedMeta[talk.id]!.attendeeCount} attendee${completedMeta[talk.id]!.attendeeCount === 1 ? '' : 's'}`
+                                        : ''}
+                                </Text>
                             </View>
                             <Ionicons name="chevron-forward" size={16} color={COLORS.subtitle} />
                         </TouchableOpacity>
