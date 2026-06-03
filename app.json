@@ -2,7 +2,7 @@
   "expo": {
     "name": "UtilityVision",
     "slug": "fieldworker-mobile",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -14,6 +14,7 @@
     },
     "ios": {
       "supportsTablet": false,
+      "buildNumber": "2",
       "infoPlist": {
         "NSCameraUsageDescription": "UtilityVision needs camera access to capture site photos and signatures.",
         "NSPhotoLibraryUsageDescription": "UtilityVision needs photo library access to attach site photos.",

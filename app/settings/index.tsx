@@ -155,7 +155,7 @@ export default function SettingsScreen() {
                 </View>
 
                 {/* Footer */}
-                <Text style={styles.footer}>UtilityVision Mobile v2.0.0{'\n'}Built with Expo SDK 54</Text>
+                <Text style={styles.footer}>UtilityVision Mobile v1.0.0{'\n'}Built with Expo SDK 54</Text>
             </ScrollView>
         </View>
     );
