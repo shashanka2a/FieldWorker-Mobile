@@ -217,7 +217,7 @@ export default function MoreScreen() {
                     />
                 </View>
 
-                <Text style={styles.version}>FieldWorker v1.0.0</Text>
+                <Text style={styles.version}>UtilityVision v2.0.0</Text>
             </ScrollView>
         </SafeAreaView>
     );

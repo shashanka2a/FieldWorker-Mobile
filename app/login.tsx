@@ -59,7 +59,7 @@ export default function LoginScreen() {
                         <View style={styles.logoBadge}>
                             <Ionicons name="construct-outline" size={44} color={COLORS.white} />
                         </View>
-                        <Text style={styles.title}>FieldWorker</Text>
+                        <Text style={styles.title}>UtilityVision</Text>
                         <Text style={styles.subtitle}>Sign in with your workspace account</Text>
                     </View>
 
